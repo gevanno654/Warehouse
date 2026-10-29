@@ -396,6 +396,15 @@ Idempotency keys are scoped to the authenticated user. The behaviour is:
 
 A first-time success returns `201`; a replay of that same request returns `200` with the identical body. Frontend code should generate one key per logical submission and reuse it only when retrying that submission.
 
+### Frontend interface
+
+The React frontend (`frontend/src/`) implements the full operator workflow:
+
+- Login and session restore (`POST /api/v1/auth/login`, `GET /api/v1/auth/me`). The JWT lives in `sessionStorage`, so it dies with the tab instead of surviving on a shared machine. This is a harm-reduction tradeoff, not a security boundary — any script in the page could read it — and backend enforcement on every route is the real control. An expired or rejected token clears the session and returns to login.
+- Receiving-document list and detail, creation with product search, and receipt submission, backed by `GET/POST /api/v1/receiving-documents`, `GET /api/v1/receiving-documents/{id}`, and `POST .../items/{itemId}/receipts`. Receipt attempts mint one UUID v4 `Idempotency-Key` and retain it across retries of that attempt; a different quantity, item, or document mints a fresh key. Submit buttons lock while a request is in flight, and results render only after the API confirms success.
+- Inventory balances (`GET /api/v1/inventory`, search + pagination) and the newest-first `RECEIPT` audit trail (`GET /api/v1/inventory/transactions`, exact-SKU product filter plus inclusive from/to dates). Display fields come straight from the responses; no invented totals.
+- Navigation uses hash routes (`#/documents`, `#/documents/new`, `#/documents/{id}`, `#/inventory`, `#/transactions`) so the static `web` container needs no rewrite rules. Screens show loading, empty, success, and error states from the documented `{ error: { code, message, details } }` envelope; `422 RECEIPT_EXCEEDS_REMAINING` surfaces the server-reported `remainingQuantity`.
+
 ## 8. Business Rules
 
 - Receiving quantities must be positive integers.
@@ -635,6 +644,7 @@ Update this section as implementation progresses.
 - [x] Idempotency and concurrency protection (Phase 3B) — per-user keys, canonical SHA-256 request hash, stored-snapshot replay (`200`), conflict (`409`), unique-violation race recovery, rollback on failure
 - [x] Automated tests (Phase 3B backend) — 196 backend tests passing (11 files) against an isolated PostgreSQL test database, including real concurrency, fault-injection rollback, and contract-consistency suites
 - [x] API contract verification (Phase 3B backend) — served `openapi.yaml` is byte-identical to the reviewed document; implemented routes match documented paths/methods and the error registry matches the `ErrorCode` enum
+- [x] Frontend receiving and inventory interface (Phase 3C) — login, session restore, hash-routed shell, document list/detail/create, idempotent receipt submission, inventory listing, transaction history; 37 frontend tests passing (6 files), verified against the real backend with a smoke flow
 - [ ] Final setup and deployment verification
 
 Do not mark a feature as complete until its implementation and verification have been performed.
