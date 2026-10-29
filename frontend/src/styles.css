@@ -1,0 +1,136 @@
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --border: #d8dce3;
+  --text: #1c2331;
+  --muted: #5a6475;
+  --accent: #1f5fae;
+  --ok: #1f7a44;
+  --warn: #b3541e;
+  --pending: #5a6475;
+
+  color-scheme: light;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 4rem;
+}
+
+.app__header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.app__title {
+  margin: 0;
+  font-size: 1.75rem;
+  letter-spacing: -0.01em;
+}
+
+.app__subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+}
+
+.app__main {
+  display: grid;
+  gap: 1rem;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+}
+
+.card__title {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+.card__body {
+  margin: 0;
+  color: var(--muted);
+}
+
+.details {
+  margin: 1rem 0 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.details__row {
+  display: grid;
+  grid-template-columns: 12rem 1fr;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.details__row dt {
+  color: var(--muted);
+}
+
+.details__row dd {
+  margin: 0;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  word-break: break-all;
+}
+
+a {
+  color: var(--accent);
+}
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1.5rem;
+  font-size: 0.9rem;
+}
+
+.status__dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--pending);
+}
+
+.status[data-status="checking"] .status__dot {
+  background: var(--pending);
+}
+
+.status[data-status="connected"] .status__dot {
+  background: var(--ok);
+}
+
+.status[data-status="unavailable"] .status__dot {
+  background: var(--warn);
+}
+
+.status__label {
+  font-weight: 600;
+}
+
+.status__detail {
+  color: var(--muted);
+}

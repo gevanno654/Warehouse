@@ -1,0 +1,154 @@
+// Warehouse Receiving System — database schema.
+//
+// Derived from `docs/erd.mmd` (authoritative relationships) and
+// `docs/data-model.md` (constraints, enums, integrity rules).
+// Do not add fields or relationships that those documents do not define.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// OPERATOR and SUPERVISOR are the only approved roles.
+enum UserRole {
+  OPERATOR
+  SUPERVISOR
+}
+
+/// Document status is derived from item quantities by the service and is
+/// recalculated inside the receipt transaction while holding the row lock.
+enum ReceivingDocumentStatus {
+  PENDING
+  PARTIALLY_RECEIVED
+  COMPLETED
+}
+
+/// Receipt is the only approved transaction type; outbound movement is out of scope.
+enum InventoryTransactionType {
+  RECEIPT
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  role         UserRole
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  receivingDocuments    ReceivingDocument[]
+  receiptOperations     ReceiptOperation[]
+  inventoryTransactions InventoryTransaction[]
+
+  @@map("users")
+}
+
+model Product {
+  id        String   @id @default(uuid()) @db.Uuid
+  sku       String   @unique @db.VarChar(64)
+  name      String   @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // PRODUCTS ||--|| INVENTORIES: exactly one inventory row per product.
+  inventory             Inventory?
+  receivingItems        ReceivingItem[]
+  inventoryTransactions InventoryTransaction[]
+
+  @@map("products")
+}
+
+model ReceivingDocument {
+  id             String                  @id @default(uuid()) @db.Uuid
+  documentNumber String                  @unique @map("document_number") @db.VarChar(32)
+  status         ReceivingDocumentStatus @default(PENDING)
+  createdBy      String                  @map("created_by") @db.Uuid
+  createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  creator User            @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  items   ReceivingItem[]
+
+  @@index([createdBy])
+  @@map("receiving_documents")
+}
+
+model ReceivingItem {
+  id               String   @id @default(uuid()) @db.Uuid
+  documentId       String   @map("document_id") @db.Uuid
+  productId        String   @map("product_id") @db.Uuid
+  expectedQuantity Int      @map("expected_quantity") @db.Integer
+  receivedQuantity Int      @default(0) @map("received_quantity") @db.Integer
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  document ReceivingDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  product  Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  receiptOperations     ReceiptOperation[]
+  inventoryTransactions InventoryTransaction[]
+
+  // A product may appear only once in the same receiving document.
+  @@unique([documentId, productId])
+  @@index([productId])
+  @@map("receiving_items")
+}
+
+model Inventory {
+  id                String   @id @default(uuid()) @db.Uuid
+  productId         String   @unique @map("product_id") @db.Uuid
+  availableQuantity Int      @default(0) @map("available_quantity") @db.Integer
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@map("inventories")
+}
+
+model ReceiptOperation {
+  id               String   @id @default(uuid()) @db.Uuid
+  performedBy      String   @map("performed_by") @db.Uuid
+  idempotencyKey   String   @map("idempotency_key") @db.VarChar(255)
+  requestHash      String   @map("request_hash") @db.VarChar(64)
+  receivingItemId  String   @map("receiving_item_id") @db.Uuid
+  quantity         Int      @db.Integer
+  responseSnapshot Json     @map("response_snapshot") @db.JsonB
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  performer     User          @relation(fields: [performedBy], references: [id], onDelete: Restrict)
+  receivingItem ReceivingItem @relation(fields: [receivingItemId], references: [id], onDelete: Restrict)
+
+  // RECEIPT_OPERATIONS ||--|| INVENTORY_TRANSACTIONS: one transaction per operation.
+  inventoryTransaction InventoryTransaction?
+
+  // Scoped per user, never globally unique. One user's key must not collide
+  // with, or observe, another user's stored response.
+  @@unique([performedBy, idempotencyKey])
+  @@index([receivingItemId])
+  @@index([createdAt])
+  @@map("receipt_operations")
+}
+
+model InventoryTransaction {
+  id                 String                   @id @default(uuid()) @db.Uuid
+  productId          String                   @map("product_id") @db.Uuid
+  receivingItemId    String                   @map("receiving_item_id") @db.Uuid
+  receiptOperationId String                   @unique @map("receipt_operation_id") @db.Uuid
+  transactionType    InventoryTransactionType @map("transaction_type")
+  quantityChange     Int                      @map("quantity_change") @db.Integer
+  performedBy        String                   @map("performed_by") @db.Uuid
+  createdAt          DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  product          Product          @relation(fields: [productId], references: [id], onDelete: Restrict)
+  receivingItem    ReceivingItem    @relation(fields: [receivingItemId], references: [id], onDelete: Restrict)
+  receiptOperation ReceiptOperation @relation(fields: [receiptOperationId], references: [id], onDelete: Restrict)
+  performer        User             @relation(fields: [performedBy], references: [id], onDelete: Restrict)
+
+  @@index([productId, createdAt])
+  @@index([receivingItemId])
+  @@index([performedBy])
+  @@map("inventory_transactions")
+}

@@ -43,6 +43,8 @@ warehouse-receiving-system/
 ├── README.md
 ├── docker-compose.yml
 ├── .env.example
+├── .gitignore
+├── .dockerignore
 ├── .nvmrc
 ├── docs/
 │   ├── prd.md
@@ -53,18 +55,43 @@ warehouse-receiving-system/
 │   ├── data-flow.mmd
 │   ├── ai-workflow.md
 │   └── testing.md
+├── docker/
+│   └── postgres/
+│       └── init-test-db.sql
 ├── frontend/
+│   ├── Dockerfile
+│   ├── nginx.conf
+│   ├── index.html
 │   ├── package.json
+│   ├── vite.config.ts
 │   └── src/
+│       ├── components/
+│       ├── hooks/
+│       ├── services/
+│       ├── App.tsx
+│       └── main.tsx
 └── backend/
+    ├── Dockerfile
     ├── package.json
+    ├── prisma.config.ts
     ├── prisma/
     │   ├── schema.prisma
-    │   ├── migrations/
-    │   └── seed.ts
+    │   ├── seed.ts
+    │   └── migrations/
     ├── src/
+    │   ├── config/
+    │   ├── lib/
+    │   ├── middleware/
+    │   ├── routes/
+    │   ├── seed/
+    │   ├── test-support/
+    │   ├── app.ts
+    │   └── server.ts
     └── tests/
+        └── helpers/
 ```
+
+Directories that appear in later phases — `backend/src/modules/` and the frontend feature pages — are added when the corresponding feature is implemented.
 
 ## 4. Prerequisites
 
@@ -158,7 +185,7 @@ Inspect application logs if a service fails to start:
 docker compose logs --tail=100
 ```
 
-The application may require database migrations before it can serve requests. Follow the migration instructions below.
+The application requires database migrations before the seeded users and any database-backed feature will work. Follow Steps 4 and 5 in that order. Health and readiness checks work without them, but readiness reports `503` until the database is reachable.
 
 ### Step 4: Apply database migrations
 
@@ -180,6 +207,10 @@ npx prisma migrate deploy
 
 Use `migrate dev` for development workflows and `migrate deploy` to apply existing migrations in deployment environments. Do not use development migration commands against production.
 
+The committed initial migration is `backend/prisma/migrations/20261029072619_init/`. It creates the seven application tables, their enums, unique and foreign-key constraints, and the quantity and hash `CHECK` constraints that Prisma cannot express in `schema.prisma`. Those `CHECK` constraints are added directly in the migration SQL and apply to every database created from the migration history.
+
+`migrate deploy` never resets data. `migrate dev` may prompt to reset the development database when it detects drift, so run it only against a database you are willing to recreate.
+
 ### Step 5: Create the development users
 
 The application requires seeded users before you can log in. The seed command creates one supervisor and one operator account:
@@ -194,7 +225,13 @@ npm run db:seed
 | Supervisor | `supervisor@example.com` | value of `SEED_PASSWORD` |
 | Operator | `operator@example.com` | value of `SEED_PASSWORD` |
 
-These accounts exist for **development and demonstration only**. The seed script is idempotent, so running it again does not create duplicates. It refuses to run when `NODE_ENV=production` unless `ALLOW_PROD_SEED=true` is set. Never enable it in a real deployment, and never reuse the development password.
+The command requires:
+
+- A migrated database reachable through `DATABASE_URL`.
+- `SEED_PASSWORD` set to a non-empty value in the environment or in `.env`. The script loads the repository-root `.env` and then `backend/.env`, but an already-exported variable wins. Nothing is hard-coded, so no real credential appears in the repository.
+- `BCRYPT_ROUNDS` optionally. It defaults to `12`, and values below the documented minimum of `10` are rejected.
+
+These accounts exist for **development and demonstration only**. The seed script is idempotent: each account is looked up by email, so a second run creates no duplicates and reports `already exists; left unchanged`. An existing password is never reset. If an existing account has drifted from its documented role, the role is corrected and the password is left untouched. The script refuses to run when `NODE_ENV=production` unless `ALLOW_PROD_SEED=true` is set. Never enable it in a real deployment, and never reuse the development password.
 
 ### Step 6: Verify application health
 
@@ -233,11 +270,13 @@ cd backend
 npm install
 ```
 
-When running on the host, set `DATABASE_URL` to the host connection string (`DATABASE_URL_HOST` in `.env.example`, pointing at `localhost`). Then apply migrations and seed the development users:
+When running on the host, set `DATABASE_URL` to the host connection string (`DATABASE_URL_HOST` in `.env.example`, pointing at `localhost`).
+
+Generate the Prisma client and validate the schema:
 
 ```bash
-npx prisma migrate dev
-npm run db:seed
+npm run db:generate
+npm run db:validate
 ```
 
 Start the backend with the script defined in `backend/package.json`:
@@ -255,7 +294,7 @@ cd frontend
 npm install
 ```
 
-Set `VITE_API_BASE_URL` in `frontend/.env` to the reachable API address, for example:
+`VITE_API_BASE_URL` is read from the repository-root `.env`, so the value from Step 2 applies to both projects. It must be the address the **browser** can reach, for example:
 
 ```dotenv
 VITE_API_BASE_URL=http://localhost:3000
@@ -370,24 +409,67 @@ Refer to `docs/prd.md` and `docs/technical-spec.md` for the complete requirement
 
 ## 9. Running Tests
 
-Tests require an isolated PostgreSQL database configured through `TEST_DATABASE_URL`. They must never run against the development or production database. If `TEST_DATABASE_URL` is unset, the test run fails with an explicit error rather than falling back to `DATABASE_URL`.
+Database-backed tests require an isolated PostgreSQL database configured through `TEST_DATABASE_URL`. They must never run against the development or production database. If `TEST_DATABASE_URL` is unset, the test run fails with an explicit error rather than falling back to `DATABASE_URL`.
 
-Run the tests from the backend project directory:
+### Test database safety rule
+
+`TEST_DATABASE_URL` is accepted only when **all** of the following hold:
+
+1. The variable is set and is a valid connection string with an explicit database name.
+2. The database name ends in `_test` (for example `warehouse_test`). This is the documented rule that makes a test target unambiguous.
+3. The database name is not a system database (`postgres`, `template0`, `template1`).
+4. It is not byte-for-byte identical to `DATABASE_URL`.
+
+The check lives in [backend/src/test-support/test-database.ts](backend/src/test-support/test-database.ts). The test suite loads environment files and then **removes `DATABASE_URL`** from the process so an accidental fallback fails loudly instead of silently succeeding. `TRUNCATE ... RESTART IDENTITY CASCADE` is issued only after the target has passed the rule above; no reset, drop, truncate, or destructive migration runs against an unverified database.
+
+Compose creates the test database through [docker/postgres/init-test-db.sql](docker/postgres/init-test-db.sql) when the data volume is first initialised. If the volume already exists, create it manually:
+
+```bash
+docker compose exec db createdb -U "$POSTGRES_USER" warehouse_test
+```
+
+### Applying migrations to the test database
+
+The schema tests exercise real constraints, so the test database needs the same migration history:
+
+```bash
+cd backend
+DATABASE_URL="$TEST_DATABASE_URL" npx prisma migrate deploy
+```
+
+Run this once per fresh test database. Tests reset rows between cases; they never recreate the schema.
+
+### Running the database-backed tests
+
+```bash
+cd backend
+export TEST_DATABASE_URL="postgresql://<user>:<password>@localhost:5432/warehouse_test"
+npm test
+```
+
+Without `TEST_DATABASE_URL` the database suites fail with `TestDatabaseConfigError` and the message explaining that there is no fallback. This is intentional: it proves the guard works. The health, configuration, and frontend suites open no database and pass either way.
+
+Backend:
 
 ```bash
 cd backend
 npm test
-```
-
-Run linting, type checking, and the production build using the scripts configured in `package.json`. Example commands, if the scripts exist:
-
-```bash
 npm run lint
 npm run typecheck
 npm run build
 ```
 
-Verify the actual script names before executing them.
+Frontend:
+
+```bash
+cd frontend
+npm test
+npm run lint
+npm run typecheck
+npm run build
+```
+
+Each project uses a single `eslint.config.js` flat config with type-aware rules. Run the commands from the project directory so the correct config and `tsconfig.json` are picked up.
 
 Use an isolated test database. Do not point automated tests at production data.
 
@@ -411,14 +493,23 @@ Prisma schema and migrations are maintained in the backend project.
 Common development commands include:
 
 ```bash
-npx prisma validate
-npx prisma generate
-npx prisma migrate dev
+cd backend
+npm run db:validate
+npm run db:generate
+npm run db:migrate:dev
+npm run db:migrate:deploy
+npm run db:seed
 ```
 
 Use the commands from the backend directory with the correct environment variables configured.
 
 Avoid manually editing the database schema without creating a corresponding migration. Never modify an already-applied migration to rewrite database history.
+
+### Schema and constraint notes
+
+`docs/data-model.md` §3 requires database-level enforcement of quantity and hash rules that Prisma's schema language cannot express (`CHECK` constraints). They are authored directly in the initial migration and are part of the migration history from its first application. Changing one later requires a new migration, not an edit to `20261029072619_init`.
+
+Model-level naming uses `@map`/`@@map`, so the Prisma models are camel-case while the tables and columns match the snake_case names in `docs/erd.mmd`.
 
 ## 11. AI-Assisted Development
 
@@ -509,9 +600,9 @@ Verify environment variables, ports, dependency health, and the configured start
 
 Update this section as implementation progresses.
 
-- [x] Specifications and project documentation (Phase 0) — written, pending review before implementation begins
-- [ ] Project configuration and Docker Compose
-- [ ] Database schema and migrations
+- [x] Specifications and project documentation (Phase 0)
+- [x] Project foundation (Phase 1) — API health/readiness, Swagger UI, frontend shell, Docker Compose
+- [x] Database schema and migrations (Phase 2) — seven Prisma models, initial migration, test-database safeguards, idempotent development seed
 - [ ] Authentication and authorization
 - [ ] Product management
 - [ ] Receiving document management
