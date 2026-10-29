@@ -10,7 +10,9 @@ import type { AppConfig } from "./config/index.js";
 import { createErrorHandler, notFoundHandler } from "./middleware/error-handler.js";
 import { createTokenService } from "./lib/tokens.js";
 import { createAuthRouter } from "./modules/auth/routes.js";
+import { createInventoryRouter } from "./modules/inventory/routes.js";
 import { createProductRouter } from "./modules/products/routes.js";
+import { createReceivingRouter } from "./modules/receiving/routes.js";
 import { createHealthRouter, createOpenApiRouter } from "./routes/health.js";
 
 export interface CreateAppOptions {
@@ -71,6 +73,8 @@ export function createApp({ config, checkDatabase, prisma }: CreateAppOptions): 
 
   app.use("/api/v1", createAuthRouter({ prisma, tokens }));
   app.use("/api/v1", createProductRouter({ prisma, tokens }));
+  app.use("/api/v1", createReceivingRouter({ prisma, tokens }));
+  app.use("/api/v1", createInventoryRouter({ prisma, tokens }));
 
   app.use(notFoundHandler);
   app.use(createErrorHandler({ isProduction: config.isProduction }));

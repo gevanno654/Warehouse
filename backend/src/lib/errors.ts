@@ -73,6 +73,53 @@ export const forbiddenError = (): AppError =>
 export const duplicateSkuError = (): AppError =>
   new AppError(409, "DUPLICATE_SKU", "A product with this SKU already exists.");
 
+export const duplicateDocumentItemError = (): AppError =>
+  new AppError(
+    409,
+    "DUPLICATE_DOCUMENT_ITEM",
+    "A product may appear only once in a receiving document.",
+  );
+
+export const idempotencyKeyRequiredError = (): AppError =>
+  new AppError(
+    400,
+    "IDEMPOTENCY_KEY_REQUIRED",
+    "The Idempotency-Key header is required for receipt requests.",
+  );
+
+export const idempotencyKeyConflictError = (): AppError =>
+  new AppError(
+    409,
+    "IDEMPOTENCY_KEY_CONFLICT",
+    "This Idempotency-Key was already used for a different request.",
+  );
+
+export const invalidQuantityError = (): AppError =>
+  new AppError(400, "INVALID_QUANTITY", "The quantity must be a positive integer.");
+
+/** A referenced product does not exist (document creation). */
+export const productsNotFoundError = (): AppError =>
+  new AppError(404, "NOT_FOUND", "One or more referenced products do not exist.");
+
+/** The document, the item, or their association does not exist (receipts). */
+export const receivingNotFoundError = (): AppError =>
+  new AppError(404, "NOT_FOUND", "Receiving document or item not found.");
+
+export const receiptExceedsRemainingError = (remainingQuantity: number): AppError =>
+  new AppError(
+    422,
+    "RECEIPT_EXCEEDS_REMAINING",
+    "The receipt quantity exceeds the remaining expected quantity.",
+    { remainingQuantity },
+  );
+
+export const documentAlreadyCompletedError = (): AppError =>
+  new AppError(
+    422,
+    "DOCUMENT_ALREADY_COMPLETED",
+    "Completed receiving documents cannot accept additional receipts.",
+  );
+
 export const serviceUnavailableError = (): AppError =>
   new AppError(
     503,

@@ -533,6 +533,8 @@ Model-level naming uses `@map`/`@@map`, so the Prisma models are camel-case whil
 
 `20261029153544_widen_product_sku` widens `products.sku` from `VARCHAR(64)` to `VARCHAR(100)` so the column matches `docs/openapi.yaml` (`maxLength: 100`) and `docs/technical-spec.md` §4.2. It is additive: existing data, the unique index, and every relationship that references `products` are unchanged.
 
+`20261029180000_add_document_number_sequence` adds the `receiving_document_number_seq` sequence backing backend-generated document numbers (`RCV-<YYYYMMDD>-<000001>`, `docs/technical-spec.md` §5.5). No table is altered; the Prisma schema is unchanged because the sequence is consumed through raw SQL inside the creation transaction.
+
 ## 11. AI-Assisted Development
 
 This repository uses spec-driven development with AI coding assistance.
@@ -627,12 +629,12 @@ Update this section as implementation progresses.
 - [x] Database schema and migrations (Phase 2) — seven Prisma models, initial migration, test-database safeguards, idempotent development seed
 - [x] Authentication and authorization (Phase 3A) — login, `/auth/me`, JWT bearer middleware, `OPERATOR`/`SUPERVISOR` role enforcement
 - [x] Product management (Phase 3A) — list and supervisor-only create, atomic product plus inventory creation
-- [ ] Receiving document management
-- [ ] Partial and complete receipt processing
-- [ ] Inventory and transaction history
-- [ ] Idempotency and concurrency protection
-- [ ] Automated tests
-- [ ] API contract verification
+- [x] Receiving document management (Phase 3B) — atomic list/create/detail, backend-generated document numbers with sequence plus bounded collision retry
+- [x] Partial and complete receipt processing (Phase 3B) — single-transaction receipts with document → item → inventory row locking and derived status recalculation
+- [x] Inventory and transaction history (Phase 3B) — persisted stock listing with search, newest-first `RECEIPT` audit trail with product and date filters
+- [x] Idempotency and concurrency protection (Phase 3B) — per-user keys, canonical SHA-256 request hash, stored-snapshot replay (`200`), conflict (`409`), unique-violation race recovery, rollback on failure
+- [x] Automated tests (Phase 3B backend) — 196 backend tests passing (11 files) against an isolated PostgreSQL test database, including real concurrency, fault-injection rollback, and contract-consistency suites
+- [x] API contract verification (Phase 3B backend) — served `openapi.yaml` is byte-identical to the reviewed document; implemented routes match documented paths/methods and the error registry matches the `ErrorCode` enum
 - [ ] Final setup and deployment verification
 
 Do not mark a feature as complete until its implementation and verification have been performed.
