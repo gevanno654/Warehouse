@@ -1,0 +1,113 @@
+```mermaid
+erDiagram
+    USERS ||--o{ RECEIVING_DOCUMENTS : creates
+    USERS ||--o{ RECEIPT_OPERATIONS : performs
+    USERS ||--o{ INVENTORY_TRANSACTIONS : performs
+
+    PRODUCTS ||--|| INVENTORIES : has
+    RECEIVING_DOCUMENTS ||--|{ RECEIVING_ITEMS : contains
+    PRODUCTS ||--o{ RECEIVING_ITEMS : references
+
+    RECEIVING_ITEMS ||--o{ RECEIPT_OPERATIONS : receives
+    PRODUCTS ||--o{ INVENTORY_TRANSACTIONS : records
+    RECEIVING_ITEMS ||--o{ INVENTORY_TRANSACTIONS : generates
+    RECEIPT_OPERATIONS ||--|| INVENTORY_TRANSACTIONS : produces
+
+    USERS {
+        uuid id PK
+        varchar email UK
+        varchar password_hash
+        enum role
+        timestamptz created_at
+    }
+
+    PRODUCTS {
+        uuid id PK
+        varchar sku UK
+        varchar name
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    RECEIVING_DOCUMENTS {
+        uuid id PK
+        varchar document_number UK
+        enum status
+        uuid created_by FK
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    RECEIVING_ITEMS {
+        uuid id PK
+        uuid document_id FK
+        uuid product_id FK
+        integer expected_quantity
+        integer received_quantity
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    INVENTORIES {
+        uuid id PK
+        uuid product_id FK
+        integer available_quantity
+        timestamptz updated_at
+    }
+
+    RECEIPT_OPERATIONS {
+        uuid id PK
+        varchar idempotency_key UK
+        varchar request_hash
+        uuid receiving_item_id FK
+        uuid performed_by FK
+        integer quantity
+        jsonb response_snapshot
+        timestamptz created_at
+    }
+
+    INVENTORY_TRANSACTIONS {
+        uuid id PK
+        uuid product_id FK
+        uuid receiving_item_id FK
+        uuid receipt_operation_id FK
+        enum transaction_type
+        integer quantity_change
+        uuid performed_by FK
+        timestamptz created_at
+    }
+```
+
+## Database Constraints
+
+The following constraints must be implemented in the Prisma schema and PostgreSQL migrations.
+
+| Table | Constraint |
+|---|---|
+| `users` | `email` must be unique. |
+| `products` | `sku` must be unique after normalisation. |
+| `receiving_documents` | `document_number` must be unique. |
+| `receiving_items` | `UNIQUE (document_id, product_id)` |
+| `receiving_items` | `expected_quantity > 0` |
+| `receiving_items` | `received_quantity >= 0 AND received_quantity <= expected_quantity` |
+| `inventories` | `UNIQUE (product_id)` and `available_quantity >= 0` |
+| `receipt_operations` | `idempotency_key` must be unique. |
+| `inventory_transactions` | `receipt_operation_id` must be unique. |
+| `inventory_transactions` | `quantity_change > 0` for receipt transactions. |
+
+## Enumerated Values
+
+- `users.role`: `OPERATOR`, `SUPERVISOR`
+- `receiving_documents.status`: `PENDING`, `PARTIALLY_RECEIVED`, `COMPLETED`
+- `inventory_transactions.transaction_type`: `RECEIPT`
+
+## Relationship and Integrity Rules
+
+1. A receiving document must contain at least one receiving item.
+2. A product can appear only once in the same receiving document.
+3. Every product has one inventory record, initialised with `available_quantity = 0`.
+4. Each accepted receipt operation produces exactly one inventory transaction.
+5. Each inventory transaction references the product and receiving item involved in the receipt.
+6. `receipt_operation_id` is unique in `inventory_transactions`, preventing multiple inventory transactions from referencing the same accepted receipt operation.
+7. Receipt quantity, inventory quantity, transaction history, and document status must be updated within the same database transaction.
+8. Foreign keys must prevent deletion of records that are required to preserve historical receiving and inventory records.
