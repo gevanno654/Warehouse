@@ -1,24 +1,23 @@
-```mermaid
 flowchart TD
     U["User: Operator / Supervisor"]
     FE["Frontend React + TypeScript"]
     AUTH["Authentication Middleware<br/>JWT Verification"]
     RBAC["Authorization Middleware<br/>Role Check"]
     API["Express REST API"]
-    VAL["Request Validation<br/>Zod"]
+    VAL["Request Validation<br/>Zod: body, query, params, headers"]
     SVC["Business Logic Service"]
     DB[("PostgreSQL")]
-    RESP["API Response"]
+    RESP["API Response<br/>stable error code"]
     UI["Display Result in UI"]
 
     U --> FE
     FE -->|"HTTP Request + JWT"| AUTH
     AUTH -->|"Token valid"| RBAC
-    AUTH -->|"Token invalid / expired"| RESP
+    AUTH -->|"Token invalid / expired: 401 UNAUTHENTICATED"| RESP
     RBAC -->|"Role permitted"| API
-    RBAC -->|"Role not permitted"| RESP
+    RBAC -->|"Role not permitted: 403 FORBIDDEN"| RESP
     API --> VAL
-    VAL -->|"Invalid request"| RESP
+    VAL -->|"Schema invalid: 400 VALIDATION_ERROR / INVALID_QUANTITY<br/>Missing header: 400 IDEMPOTENCY_KEY_REQUIRED"| RESP
     VAL -->|"Valid request"| SVC
     SVC <--> DB
     SVC --> RESP
@@ -27,23 +26,27 @@ flowchart TD
 
     subgraph RECEIPT["Receipt Processing: Atomic Transaction"]
         R1["Receive quantity + Idempotency-Key"]
-        R2["Validate receiving item and quantity"]
-        R3["Begin database transaction"]
-        R4["Lock relevant rows"]
-        R5{"Idempotency key already exists?"}
-        R6{"Request hash matches?"}
-        R7["Return stored response snapshot"]
-        R8["Reject key reuse with different payload"]
-        R9{"Quantity exceeds remaining amount?"}
-        R10["Reject over-receiving"]
-        R11["Insert receipt operation"]
-        R12["Increase received quantity"]
-        R13["Increase inventory quantity"]
-        R14["Insert inventory transaction"]
-        R15["Recalculate document status"]
-        R16["Store response snapshot"]
-        R17["Commit transaction"]
-        R18["Rollback transaction on failure"]
+        R2["Begin database transaction"]
+        R3["Lock receiving document row<br/>SELECT FOR UPDATE"]
+        R4["Lock receiving item row<br/>must belong to the document"]
+        R5{"Idempotency key exists<br/>for performed_by + key?"}
+        R6{"Canonical request hash matches?<br/>method + documentId + itemId + quantity"}
+        R7["Return stored response snapshot<br/>HTTP 200, no writes"]
+        R8["409 IDEMPOTENCY_KEY_CONFLICT<br/>rollback"]
+        R9{"Document currently COMPLETED?"}
+        R10["422 DOCUMENT_ALREADY_COMPLETED<br/>rollback"]
+        R11{"Quantity exceeds remaining quantity?"}
+        R12["422 RECEIPT_EXCEEDS_REMAINING<br/>rollback"]
+        R13["Lock inventory row for the product"]
+        R14["Insert receipt operation"]
+        R15["Increase received quantity"]
+        R16["Increase inventory quantity"]
+        R17["Insert inventory transaction"]
+        R18["Recalculate document status<br/>from all items, under document lock"]
+        R19["Store response snapshot"]
+        R20["Commit transaction"]
+        R21["Unique violation on performed_by + key<br/>rollback, re-read in new transaction"]
+        R22["Rollback transaction on failure: 500 INTERNAL_ERROR"]
 
         R1 --> R2
         R2 --> R3
@@ -55,21 +58,27 @@ flowchart TD
         R5 -->|"No"| R9
         R9 -->|"Yes"| R10
         R9 -->|"No"| R11
-        R11 --> R12
-        R12 --> R13
+        R11 -->|"Yes"| R12
+        R11 -->|"No"| R13
         R13 --> R14
         R14 --> R15
         R15 --> R16
         R16 --> R17
-        R3 -.->|"Database / processing error"| R18
+        R17 --> R18
+        R18 --> R19
+        R19 --> R20
+        R14 -.->|"Conflict"| R21
+        R3 -.->|"Database / processing error"| R22
     end
 
     SVC -->|"Receipt request"| R1
     R7 -->|"Idempotent replay"| RESP
     R8 -->|"Conflict response"| RESP
-    R10 -->|"Business validation error"| RESP
-    R17 -->|"Successful receipt"| RESP
-    R18 -->|"Failure response"| RESP
+    R10 -->|"Business-rule error"| RESP
+    R12 -->|"Business-rule error"| RESP
+    R20 -->|"Successful receipt: 201"| RESP
+    R21 -->|"Replay or conflict"| RESP
+    R22 -->|"Failure response"| RESP
 
     classDef user fill:#e8f0fe,stroke:#4285f4,color:#202124
     classDef process fill:#e6f4ea,stroke:#34a853,color:#202124
@@ -79,5 +88,4 @@ flowchart TD
     class U,FE,UI user
     class AUTH,RBAC,API,VAL,SVC,RESP process
     class DB database
-    class R8,R10,R18 error
-```
+    class R8,R10,R12,R22 error

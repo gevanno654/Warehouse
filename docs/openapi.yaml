@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: Warehouse Receiving System API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     REST API for managing products, receiving documents, receipt operations,
     inventory balances, and inventory transaction history.
@@ -10,6 +10,26 @@ info:
     Business rules are enforced by the backend. Receipt processing must update
     received quantities, inventory, receipt operations, inventory transactions,
     and document status atomically.
+
+    Interactive documentation is served by Swagger UI at `/docs`; this document
+    is served at `/openapi.yaml`.
+
+    ## Status code policy
+
+    - `400` - malformed or schema-invalid request (wrong type, missing field,
+      invalid UUID, invalid pagination, missing required header).
+    - `401` - missing, malformed, or expired authentication.
+    - `403` - authenticated but lacking the required role.
+    - `404` - referenced resource does not exist.
+    - `409` - collides with existing state: duplicate resource, duplicate item,
+      or idempotency key replay with a different target or payload.
+    - `422` - schema-valid but violates a business rule.
+    - `429` - rate limit exceeded, only if rate limiting is enabled.
+    - `500` - unexpected server error.
+    - `503` - readiness failure only.
+
+    A schema failure is never reported as `422`, and a business-rule failure is
+    never reported as `400`.
 
 servers:
   - url: http://localhost:3000
@@ -72,6 +92,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: SERVICE_UNAVAILABLE
+                  message: A required dependency is unavailable.
 
   /api/v1/auth/login:
     post:
@@ -173,6 +197,8 @@ paths:
                       $ref: "#/components/schemas/Product"
                   meta:
                     $ref: "#/components/schemas/PaginationMeta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -216,13 +242,17 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "409":
-          description: SKU already exists
+          description: SKU already exists after trimming and upper-casing
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "422":
-          $ref: "#/components/responses/ValidationError"
+                example:
+                  error:
+                    code: DUPLICATE_SKU
+                    message: A product with this SKU already exists.
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/v1/receiving-documents:
     get:
@@ -258,18 +288,22 @@ paths:
                       $ref: "#/components/schemas/ReceivingDocumentSummary"
                   meta:
                     $ref: "#/components/schemas/PaginationMeta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "422":
-          $ref: "#/components/responses/ValidationError"
 
     post:
       tags: [Receiving Documents]
       summary: Create a receiving document
       description: |
         Creates a receiving document and its items atomically.
+
         The backend generates the document number, initial received quantities,
-        status, and creator identity.
+        status, and creator identity. The document number format is
+        `RCV-<YYYYMMDD>-<000001>`, derived from a database sequence. On a unique
+        violation the creation is retried up to three times, then fails with
+        `500 INTERNAL_ERROR`; no partially created document is left behind.
       requestBody:
         required: true
         content:
@@ -313,14 +347,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error:
+                    code: NOT_FOUND
+                    message: One or more referenced products do not exist.
         "409":
-          description: Duplicate product entries or conflicting data
+          description: The same product appears more than once in the document
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "422":
-          $ref: "#/components/responses/ValidationError"
+                example:
+                  error:
+                    code: DUPLICATE_DOCUMENT_ITEM
+                    message: A product may appear only once in a receiving document.
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/v1/receiving-documents/{id}:
     get:
@@ -339,6 +381,8 @@ paths:
                 properties:
                   data:
                     $ref: "#/components/schemas/ReceivingDocument"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -351,21 +395,49 @@ paths:
       description: |
         Records a partial or full receipt.
 
-        The Idempotency-Key header is required. The backend must process the
-        receipt in a database transaction, validate current persisted quantities,
-        update inventory, record the operation and inventory transaction,
-        recalculate document status, and store the response snapshot.
+        The `Idempotency-Key` header is required. The backend processes the
+        receipt in a single database transaction: it acquires locks in the order
+        receiving document → receiving item → inventory, checks idempotency,
+        validates the business rules, updates the received quantity and
+        inventory, records the receipt operation and inventory transaction,
+        recalculates document status from all items, and stores the response
+        snapshot.
 
-        Repeating a successful request with the same key and identical payload
-        must not create another stock movement. Reusing a key with a different
-        payload must return a conflict.
+        Idempotency keys are scoped to the authenticated user. The uniqueness
+        constraint is `(performed_by, idempotency_key)`.
+
+        The request hash is SHA-256 over a canonical string of the HTTP method,
+        document ID, item ID, and quantity:
+
+        `sha256("post|" + documentId + "|" + itemId + "|" + quantity)`
+
+        Consequences:
+
+        - Same user, same key, same target and payload → `200` with the stored
+          result, no additional stock movement.
+        - Same user, same key, different target or payload → `409`
+          `IDEMPOTENCY_KEY_CONFLICT`, no writes.
+        - First-time success → `201`.
+        - A replay returns `200` even if the document has since become
+          `COMPLETED`, because the idempotency check precedes the
+          completed-document check.
+
+        Idempotency records are retained for 30 days.
+
+        Concurrent requests are serialised by the lock order. A request that
+        loses the race is re-validated against committed values and either
+        succeeds with a smaller valid quantity or fails with
+        `422 RECEIPT_EXCEEDS_REMAINING`; it can never over-receive.
       parameters:
         - $ref: "#/components/parameters/DocumentId"
         - $ref: "#/components/parameters/ItemId"
         - name: Idempotency-Key
           in: header
           required: true
-          description: Unique key generated by the client for this logical receipt request.
+          description: |
+            Client-generated key identifying one logical receipt submission.
+            Reused verbatim only when retrying that same submission. Scoped to
+            the authenticated user; a UUID v4 is recommended.
           schema:
             type: string
             minLength: 1
@@ -403,31 +475,79 @@ paths:
                   data:
                     $ref: "#/components/schemas/ReceiptResult"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: |
+            Schema-level rejection, returned before the transaction begins. A
+            missing or empty `Idempotency-Key` header returns
+            `IDEMPOTENCY_KEY_REQUIRED`; a quantity that is not a positive integer
+            returns `INVALID_QUANTITY`; any other schema failure returns
+            `VALIDATION_ERROR`. A quantity that is a valid positive integer but
+            exceeds the remaining quantity is a business-rule failure and returns
+            `422`, not `400`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                validationError:
+                  value:
+                    error:
+                      code: VALIDATION_ERROR
+                      message: The request failed validation.
+                missingKey:
+                  value:
+                    error:
+                      code: IDEMPOTENCY_KEY_REQUIRED
+                      message: The Idempotency-Key header is required for receipt requests.
+                invalidQuantity:
+                  value:
+                    error:
+                      code: INVALID_QUANTITY
+                      message: The receipt quantity must be a positive integer.
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
-          description: Receiving document or item not found
+          description: Receiving document or item not found, or the item does not belong to the document
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error:
+                    code: NOT_FOUND
+                    message: Receiving document or item not found.
         "409":
-          description: |
-            Idempotency key reused with a different payload, or another
-            documented conflict that prevents processing.
+          description: Idempotency key reused with a different target or payload
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error:
+                    code: IDEMPOTENCY_KEY_CONFLICT
+                    message: This Idempotency-Key was already used for a different request.
         "422":
           description: |
-            Invalid receipt quantity, receipt exceeds remaining quantity,
-            or document is already completed.
+            Schema-valid request that violates a business rule: the quantity
+            exceeds the remaining quantity, or the document is already completed.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                exceedsRemaining:
+                  value:
+                    error:
+                      code: RECEIPT_EXCEEDS_REMAINING
+                      message: The receipt quantity exceeds the remaining expected quantity.
+                      details:
+                        remainingQuantity: 40
+                alreadyCompleted:
+                  value:
+                    error:
+                      code: DOCUMENT_ALREADY_COMPLETED
+                      message: Completed receiving documents cannot accept additional receipts.
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/v1/inventory:
     get:
@@ -458,10 +578,10 @@ paths:
                       $ref: "#/components/schemas/InventoryItem"
                   meta:
                     $ref: "#/components/schemas/PaginationMeta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "422":
-          $ref: "#/components/responses/ValidationError"
 
   /api/v1/inventory/transactions:
     get:
@@ -505,10 +625,10 @@ paths:
                       $ref: "#/components/schemas/InventoryTransaction"
                   meta:
                     $ref: "#/components/schemas/PaginationMeta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "422":
-          $ref: "#/components/responses/ValidationError"
 
 components:
   securitySchemes:
@@ -567,6 +687,24 @@ components:
         role:
           type: string
           enum: [OPERATOR, SUPERVISOR]
+
+    ErrorCode:
+      type: string
+      description: Stable machine-readable error identifier. Part of the API contract.
+      enum:
+        - VALIDATION_ERROR
+        - UNAUTHENTICATED
+        - FORBIDDEN
+        - NOT_FOUND
+        - IDEMPOTENCY_KEY_REQUIRED
+        - IDEMPOTENCY_KEY_CONFLICT
+        - DUPLICATE_SKU
+        - DUPLICATE_DOCUMENT_ITEM
+        - INVALID_QUANTITY
+        - RECEIPT_EXCEEDS_REMAINING
+        - DOCUMENT_ALREADY_COMPLETED
+        - INTERNAL_ERROR
+        - SERVICE_UNAVAILABLE
 
     Product:
       type: object
@@ -780,20 +918,26 @@ components:
           required: [code, message]
           properties:
             code:
-              type: string
+              $ref: "#/components/schemas/ErrorCode"
             message:
               type: string
+              description: Human-readable. May change; do not parse.
             details:
               type: object
               additionalProperties: true
+              description: Optional structured context, for example `remainingQuantity`.
 
   responses:
     BadRequest:
-      description: Malformed request or invalid request structure
+      description: Malformed or schema-invalid request
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: The request failed validation.
 
     Unauthorized:
       description: Authentication is missing or invalid
@@ -801,6 +945,10 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: UNAUTHENTICATED
+              message: Authentication is required.
 
     Forbidden:
       description: Authenticated user is not permitted to perform this operation
@@ -808,6 +956,10 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: FORBIDDEN
+              message: Your role is not permitted to perform this operation.
 
     NotFound:
       description: Requested resource does not exist
@@ -815,10 +967,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: NOT_FOUND
+              message: The requested resource does not exist.
 
-    ValidationError:
-      description: Request validation or business-rule validation failed
+    InternalError:
+      description: Unexpected server error
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: INTERNAL_ERROR
+              message: An unexpected error occurred.

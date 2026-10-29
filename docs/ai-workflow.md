@@ -12,14 +12,19 @@ AI agents must consult the following documents before implementing features:
 
 | Document | Purpose |
 |---|---|
+| `AGENTS.md` | Project-level instructions for AI coding agents |
 | `docs/prd.md` | Business requirements, user roles, business rules, and acceptance criteria |
 | `docs/technical-spec.md` | Architecture, technology stack, database design, and implementation decisions |
-| `docs/erd.mmd` | Entity relationships and database constraints |
+| `docs/erd.mmd` | Authoritative entity relationships, keys, and cardinalities |
+| `docs/data-model.md` | Database constraints, enumerated values, integrity rules, and idempotency storage rules |
 | `docs/openapi.yaml` | REST API contract, request schemas, responses, and error formats |
 | `docs/data-flow.mmd` | Request processing and receipt transaction flow |
+| `docs/testing.md` | Test cases, assertions, execution checklist, and results |
 | `docs/ai-workflow.md` | AI usage rules and verification process |
 
 If these documents conflict, stop implementation and report the conflict instead of silently choosing an interpretation. Update the relevant specification before proceeding.
+
+`docs/erd.mmd` and `docs/data-flow.mmd` are raw Mermaid source. They must remain valid Mermaid with no Markdown fences or prose blocks, so that a renderer can consume them directly. Explanatory text belongs in `docs/data-model.md`, `docs/technical-spec.md`, or `docs/prd.md`, not inside the `.mmd` files.
 
 ## 3. Development Workflow
 
@@ -109,12 +114,35 @@ The following instructions should be placed in the repository's `AGENTS.md` file
 - Inventory must never become negative.
 - Receipt processing must update the receiving item, inventory, receipt operation, inventory transaction, and document status atomically.
 - Use database transactions and appropriate row locking or equivalent concurrency controls.
+- Acquire row locks in the fixed order `receiving_documents` → `receiving_items` → `inventories`, and keep the document lock held until commit. This order is mandatory; do not reorder locks for convenience.
+- Recalculate the receiving document status from all of its item quantities inside the transaction, after acquiring the document row lock.
 - Enforce idempotency for receipt requests using the `Idempotency-Key` contract.
-- Reusing an idempotency key with a different request payload must return a conflict.
+- Scope idempotency keys by `(performed_by, idempotency_key)`; a key is never global.
+- Compute the request hash as `sha256("post|" + documentId + "|" + itemId + "|" + quantity)` and store it with the response snapshot.
+- Check for an existing idempotency record before applying business rules such as the completed-document check, so that a legitimate replay still succeeds after the document has become `COMPLETED`.
+- A key hit with a matching hash returns `200` with the stored result and writes nothing.
+- A key hit with a differing hash, document, or item returns `409 IDEMPOTENCY_KEY_CONFLICT`.
+- Handle a unique-constraint violation on `(performed_by, idempotency_key)` by rolling back, re-reading the committed row, and replaying or returning the conflict. Never surface it as a `500`.
 - A retry with the same key and same payload must not increase inventory twice.
-- Recalculate the receiving document status from its item quantities within the transaction.
-- Enforce role-based authorization on the backend; frontend restrictions alone are insufficient.
+- Enforce role-based authorization on the backend; frontend restrictions alone are insufficient. Product creation is restricted to `SUPERVISOR`.
+- Create each product and its single inventory row in one transaction.
 - Do not bypass database constraints to make a failing operation succeed.
+- Do not create stock changes without a traceable receipt operation.
+
+### Error mapping rules
+
+Use the documented status codes consistently across the API, tests, and README:
+
+- `400` — malformed or schema-invalid request, including a missing `Idempotency-Key` header and a quantity that is not a positive integer.
+- `401` — missing, malformed, or expired authentication.
+- `403` — authenticated but lacking the required role.
+- `404` — referenced resource does not exist.
+- `409` — duplicate resource or idempotency conflict.
+- `422` — structurally valid request that violates a business rule, such as over-receiving or receiving against a completed document.
+- `500` — unexpected failure, with no internal detail exposed.
+- `503` — readiness dependency unavailable.
+
+Do not return `422` for a schema failure, and do not return `409` for a business-rule violation. Every error response carries a stable `error.code` from the documented enum.
 
 ## 5. Reusable AI Prompts
 
@@ -170,14 +198,24 @@ Do not modify code initially.
 Check:
 1. Whether over-receiving is prevented.
 2. Whether concurrent requests can cause incorrect stock.
-3. Whether row locking and transaction boundaries are correct.
-4. Whether duplicate requests are idempotent.
-5. Whether a reused key with a different payload returns a conflict.
-6. Whether all receipt-related database writes are atomic.
-7. Whether document status is calculated correctly.
-8. Whether database constraints support the business rules.
-9. Whether failure paths roll back all relevant changes.
-10. Whether automated tests cover these cases.
+3. Whether row locks are acquired in the order
+   receiving_documents -> receiving_items -> inventories,
+   and whether the document lock is held until commit.
+4. Whether the idempotency check runs before the
+   completed-document and remaining-quantity checks.
+5. Whether idempotency keys are scoped by performed_by and key,
+   and whether the request hash is sha256 over
+   post|documentId|itemId|quantity.
+6. Whether a reused key with a different target or payload
+   returns 409 IDEMPOTENCY_KEY_CONFLICT.
+7. Whether a unique-constraint violation on the idempotency key
+   is recovered by re-reading and replaying, not surfaced as 500.
+8. Whether all receipt-related database writes are atomic.
+9. Whether document status is recalculated from all items
+   while the document lock is held.
+10. Whether database constraints support the business rules.
+11. Whether failure paths roll back all relevant changes.
+12. Whether automated tests cover these cases.
 
 Report findings by severity, with file references and
 specific reproduction scenarios where possible.
@@ -228,20 +266,22 @@ Do not approve the changes if critical correctness issues remain.
 
 | Area | Minimum verification |
 |---|---|
-| Authentication | Valid login, invalid credentials, expired or invalid token |
-| Authorization | Operator cannot perform supervisor-only actions |
-| Products | Required fields, invalid input, duplicate SKU |
-| Receiving documents | Valid creation, empty items, invalid products, duplicate products in one document |
-| Receipt processing | Valid partial receipt, final receipt, zero or negative quantity, over-receiving |
-| Idempotency | Same key and payload does not duplicate stock; same key with different payload returns conflict |
-| Inventory | Stock increases by exactly the accepted receipt quantity |
+| Authentication | Valid login, invalid credentials, expired or invalid token, case-insensitive email |
+| Authorization | Operator cannot create products; both roles can use the remaining in-scope endpoints |
+| Products | Required fields, invalid input, duplicate SKU, atomic product plus inventory creation |
+| Receiving documents | Valid creation, generated document number, empty items, invalid products, duplicate products in one document |
+| Receipt processing | Valid partial receipt, final receipt, zero or negative quantity (`400`), over-receiving (`422`) |
+| Idempotency | Same key and payload does not duplicate stock; different target or payload returns `409`; replay after `COMPLETED` returns `200`; keys are user-scoped |
+| Inventory | Stock increases by exactly the accepted receipt quantity; never negative |
 | Transaction history | One corresponding inventory transaction per successful receipt operation |
 | Atomicity | Failed receipt processing leaves no partial database updates |
-| Concurrency | Concurrent receipts cannot exceed expected quantity or corrupt inventory |
-| API contract | Response bodies and HTTP status codes conform to `docs/openapi.yaml` |
-| Deployment | Docker services start, health checks work, and database migrations apply |
+| Concurrency | Concurrent receipts cannot exceed expected quantity or corrupt inventory; no lost updates across documents sharing a product |
+| API contract | Response bodies, status codes, and `error.code` values conform to `docs/openapi.yaml` |
+| Deployment | `db`, `api`, and `web` services start, health and readiness work, seed is idempotent, and migrations apply |
 
-Tests should use an isolated test database and deterministic fixtures. Avoid relying on production data or external services for core business-rule tests.
+Tests should use an isolated test database configured through `TEST_DATABASE_URL` and deterministic fixtures. The test runner must fail rather than fall back to `DATABASE_URL` when `TEST_DATABASE_URL` is unset. Avoid relying on production data or external services for core business-rule tests.
+
+The authoritative test cases and IDs are in `docs/testing.md`; this table is a summary, not a replacement.
 
 ## 7. Git and Change Management
 

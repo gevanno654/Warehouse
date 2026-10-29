@@ -9,14 +9,17 @@ The application must support product management, receiving document creation, pa
 ### Technology Stack
 
 - Frontend: React, TypeScript, Vite
-- Backend: Node.js, Express, TypeScript
+- Backend: Node.js 24.x, Express, TypeScript
 - Database: PostgreSQL
 - ORM: Prisma
 - Request validation: Zod
 - Authentication: JWT
-- API documentation: OpenAPI 3.1
+- Password hashing: bcrypt
+- API documentation: OpenAPI 3.1, served with Swagger UI
 - Automated testing: Vitest and Supertest
 - Local development: Docker Compose
+
+Node.js is pinned to the **24.x** major version through `package.json` `engines`, `.nvmrc`, and the Docker base image. Do not change the pinned major version without explicit approval.
 
 Follow the existing project structure and package configuration. Do not replace the selected stack without explicit approval.
 
@@ -27,11 +30,15 @@ Before implementing a feature, read the relevant documents:
 - `docs/prd.md`
 - `docs/technical-spec.md`
 - `docs/erd.mmd`
+- `docs/data-model.md`
 - `docs/openapi.yaml`
 - `docs/data-flow.mmd`
 - `docs/ai-workflow.md`
+- `docs/testing.md`
 
 These documents define the expected system behavior and architecture.
+
+`docs/erd.mmd` is the authoritative relationship model. `docs/data-model.md` holds the constraints, enumerated values, integrity rules, and idempotency storage rules that do not fit in a Mermaid diagram. `docs/erd.mmd` and `docs/data-flow.mmd` are raw Mermaid source files: keep them valid Mermaid, with no Markdown fences or prose blocks. Explanatory content belongs in the Markdown documents.
 
 If a required document is missing, report it before proceeding with implementation that depends on it.
 
@@ -66,8 +73,9 @@ Do not invent requirements or silently introduce new business rules. State assum
 ### Products
 
 - Follow the approved product schema and validation rules.
-- Enforce SKU uniqueness.
-- Only authorized roles may create or manage products.
+- Enforce SKU uniqueness after normalisation (trimmed and upper-cased).
+- Product creation is restricted to the `SUPERVISOR` role. Both roles may list products. This is the resolved permission decision recorded in `docs/prd.md` and must be enforced on the backend.
+- Create each product and its single inventory row atomically, with `available_quantity = 0`. There is no state in which a product exists without an inventory record.
 - Do not delete or alter existing product records in ways that violate receiving or inventory history.
 
 ### Receiving documents
@@ -78,6 +86,8 @@ Do not invent requirements or silently introduce new business rules. State assum
 - Received quantity must never exceed expected quantity.
 - Reject invalid receipt requests without partially modifying data.
 - Calculate document status from its item quantities according to the approved specifications.
+- Generate `document_number` on the backend using the documented `RCV-<YYYYMMDD>-<000001>` algorithm. Clients never supply it. Do not fall back to a random or timestamp-only value.
+- Document creation and item creation must be atomic.
 
 ### Inventory
 
@@ -97,35 +107,48 @@ Receipt processing is a critical business operation. Follow `docs/data-flow.mmd`
 
 A successful receipt must atomically:
 
-1. Validate the receiving document and item.
-2. Verify that the requested quantity is valid.
-3. Determine the remaining expected quantity.
-4. Handle idempotency.
-5. Record the receipt operation.
-6. Increase the receiving item's cumulative received quantity.
-7. Increase inventory by the accepted quantity.
-8. Insert the corresponding inventory transaction.
-9. Recalculate the receiving document status.
-10. Store the response snapshot required for idempotent retries.
-11. Commit the database transaction.
+1. Authenticate the caller and authorise the operation.
+2. Validate the request shape: the `Idempotency-Key` header is present, both identifiers are valid UUIDs, and `quantity` is a positive integer.
+3. Begin the database transaction.
+4. Lock the receiving document row (`SELECT ... FOR UPDATE`), then the receiving item row, and verify that the item belongs to the document.
+5. Check whether `(performed_by, idempotency_key)` already exists.
+6. Replay or reject on a key hit, before any business-rule check.
+7. Reject a completed document.
+8. Verify that the requested quantity does not exceed the remaining expected quantity.
+9. Lock the inventory row for the product.
+10. Record the receipt operation.
+11. Increase the receiving item's cumulative received quantity.
+12. Increase inventory by the accepted quantity.
+13. Insert the corresponding inventory transaction.
+14. Recalculate the receiving document status from all of its items.
+15. Store the response snapshot required for idempotent retries.
+16. Commit the database transaction.
 
 If any required operation fails, roll back the entire transaction.
 
+The order above is not interchangeable. The idempotency check must precede the completed-document and remaining-quantity checks, so that a legitimate replay still returns the stored success after the document has become `COMPLETED`. Every other check must run inside the transaction, after its lock is held.
+
 ### Concurrency
 
-- Use appropriate database transactions and row-level locking, or an equivalent strategy that guarantees correctness.
+- Use database transactions with row-level locking. Acquire locks in the fixed order `receiving_documents` → `receiving_items` → `inventories`, and hold the document lock until commit. Never lock inventory before the document.
+- Lock the document row because status is derived from all sibling items; recalculating it from an unlocked read can lose a concurrent update.
+- Lock the inventory row because the same product may be received against two different documents at once; document-level locking alone does not serialise those writes.
 - Ensure concurrent requests cannot cause over-receiving or duplicate inventory updates.
-- Do not depend solely on frontend validation or a prior unlocked read.
-- Handle database uniqueness conflicts and transaction retries deliberately.
+- Do not depend solely on frontend validation or a prior unlocked read. A request that waits on a lock must re-validate against the committed values it reads after acquiring it.
+- Handle database uniqueness conflicts and transaction retries deliberately. A unique-constraint violation on the idempotency key is not a `500`; it is a signal to roll back, re-read, and replay or return the conflict.
+- Preserve the documented status codes: a schema failure is `400`, a business-rule failure is `422`, and a duplicate or idempotency collision is `409`.
 
 ### Idempotency
 
-- Require the `Idempotency-Key` header for receipt requests as defined in `docs/openapi.yaml`.
-- Store enough information to associate a key with its request payload and result.
-- Repeating a request with the same key and same payload must not apply the receipt twice.
-- Reusing a key with a different payload must return the documented conflict response.
-- Handle simultaneous requests using the same key safely.
+- Require the `Idempotency-Key` header for receipt requests as defined in `docs/openapi.yaml`. A missing header is `400 IDEMPOTENCY_KEY_REQUIRED`.
+- Scope keys by `(performed_by, idempotency_key)`. Uniqueness is composite, never global, so one user's key cannot collide with or observe another user's stored response.
+- Compute the request hash as `sha256(lowercase(method) + "|" + documentId + "|" + itemId + "|" + quantity)` — literally `sha256("post|" + documentId + "|" + itemId + "|" + quantity)` — using the resolved route UUIDs and the validated integer quantity, stored as 64 lowercase hex characters.
+- Store enough information to associate a key with its request payload and result: `performed_by`, `idempotency_key`, `request_hash`, `receiving_item_id`, `quantity`, and the response snapshot.
+- Repeating a request with the same key and same payload must not apply the receipt twice. Return the stored result with `200`.
+- Reusing a key with a different target or payload must return `409 IDEMPOTENCY_KEY_CONFLICT`. This includes a different document or item with an identical quantity.
+- Handle simultaneous requests using the same key safely, including the unique-constraint violation path.
 - Do not return a successful response for an operation that was rolled back.
+- Retain idempotency records for the documented retention period. Deleting an expired record must never alter a committed receipt.
 
 ## 6. API and Validation
 
@@ -133,8 +156,17 @@ If any required operation fails, roll back the entire transaction.
 - Keep endpoint paths, HTTP methods, request schemas, response schemas, and status codes consistent with the contract.
 - Use Zod to validate incoming request data.
 - Reject malformed identifiers, invalid quantities, missing required fields, and invalid payloads.
-- Use consistent error response formats.
-- Distinguish authentication failures, authorization failures, missing resources, business-rule conflicts, and unexpected server errors.
+- Use consistent error response formats with a stable `error.code` from the documented enum.
+- Distinguish the failure classes with the documented status codes:
+  - `400` — malformed or schema-invalid request, including a quantity that is not a positive integer and a missing `Idempotency-Key` header.
+  - `401` — missing, malformed, or expired authentication.
+  - `403` — authenticated but lacking the required role.
+  - `404` — referenced resource does not exist.
+  - `409` — duplicate resource or idempotency conflict.
+  - `422` — structurally valid request that violates a business rule, such as over-receiving or receiving against a completed document.
+  - `500` — unexpected server error.
+  - `503` — readiness dependency unavailable.
+- Do not use `422` for a schema failure, and do not use `409` for a plain business-rule violation.
 - Never expose stack traces, password hashes, JWT secrets, database credentials, or other sensitive implementation details in API responses.
 - Update the OpenAPI document when an approved API change is implemented.
 
@@ -142,8 +174,9 @@ Custom OpenAPI extensions such as `x-required-role` are documentation metadata u
 
 ## 7. Security
 
-- Hash passwords using an appropriate password-hashing algorithm.
+- Hash passwords with bcrypt using a documented work factor (default `BCRYPT_ROUNDS=12`, minimum 10). Do not substitute a different algorithm without explicit approval.
 - Never store plaintext passwords.
+- Compare credentials in a way that does not reveal whether an email exists, and normalise emails to lower case before lookup.
 - Keep JWT secrets and database credentials in environment variables.
 - Never commit `.env` files containing real secrets.
 - Provide `.env.example` with safe placeholder values.
@@ -153,6 +186,7 @@ Custom OpenAPI extensions such as `x-required-role` are documentation metadata u
 - Avoid returning unnecessary personal or sensitive information.
 - Use secure defaults for production configuration.
 - Do not disable security checks merely to make development or tests pass.
+- Development seed accounts are for demonstration only. The seed command must be idempotent, must read its password from `SEED_PASSWORD`, and must refuse to run with `NODE_ENV=production` unless `ALLOW_PROD_SEED=true`. Never document a real credential in the repository.
 
 ## 8. Database and Migrations
 
@@ -162,7 +196,8 @@ Custom OpenAPI extensions such as `x-required-role` are documentation metadata u
 - Do not rely exclusively on application-level validation for critical integrity rules.
 - Do not edit an already-applied migration to change database history.
 - Test migrations against a clean development or test database.
-- Use an isolated test database for automated tests.
+- Use an isolated test database for automated tests, configured through `TEST_DATABASE_URL`. If it is unset, the test run must fail instead of falling back to `DATABASE_URL`.
+- Enforce uniqueness with composite constraints where the rule is composite, notably `UNIQUE (performed_by, idempotency_key)` on `receipt_operations` and `UNIQUE (document_id, product_id)` on `receiving_items`.
 - Preserve transaction history and referential integrity.
 
 Cross-table rules that cannot be enforced using ordinary database constraints must be protected by transactional application logic and tests.
@@ -190,14 +225,17 @@ Add tests for applicable cases, including:
 - Missing resources.
 - Duplicate SKU and invalid receiving document data.
 - Partial and complete receipts.
-- Zero, negative, fractional, and excessive receipt quantities.
+- Zero, negative, and fractional quantities rejected as `400`; excessive quantities rejected as `422`.
 - Idempotent retries with the same payload.
-- Idempotency key reuse with a different payload.
+- Idempotency key reuse with a different target or payload, returning `409`.
+- Replay of a successful receipt after the document has become `COMPLETED`.
+- Idempotency keys scoped per user, including two users using the same key value.
 - Inventory updates and transaction history.
 - Database rollback on receipt failure.
-- Concurrent receipt requests.
-- Receiving document status transitions.
-- API contract compliance.
+- Concurrent receipt requests, including two documents receiving the same product.
+- Receiving document status transitions, recalculated from all items.
+- Document number generation and collision retry.
+- API contract compliance, asserting the stable `error.code`.
 
 Use deterministic fixtures and isolated test data. Do not weaken assertions simply to make tests pass.
 
@@ -206,11 +244,13 @@ After making changes, run the relevant tests, linting, type checking, and build 
 ## 11. Docker and Application Configuration
 
 - Keep Docker configuration reproducible.
-- Use Docker Compose for the documented local development setup.
-- Configure PostgreSQL health checks and service dependencies appropriately.
+- Use Docker Compose with the documented services: `db` (PostgreSQL), `api` (Express), and `web` (built frontend).
+- Configure PostgreSQL health checks and `depends_on` conditions appropriately.
+- The API container reaches PostgreSQL at host `db`; host processes use `localhost`. `DATABASE_URL` and `DATABASE_URL_HOST` exist for that reason and must not be conflated.
 - Provide application health and readiness endpoints as defined in the API contract.
 - Do not treat a running process as proof that the database is ready.
-- Document required environment variables.
+- Document required environment variables, including `DATABASE_URL`, `DATABASE_URL_HOST`, `TEST_DATABASE_URL`, `JWT_SECRET`, `BCRYPT_ROUNDS`, `CORS_ORIGIN`, `VITE_API_BASE_URL`, and `SEED_PASSWORD`.
+- `VITE_API_BASE_URL` is consumed at build time, so changing it requires rebuilding the `web` image.
 - Verify migrations and startup behavior using the documented setup.
 - Never include production secrets in Docker files or committed configuration.
 
