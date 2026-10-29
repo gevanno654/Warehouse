@@ -22,6 +22,7 @@ function start(): void {
   const app = createApp({
     config,
     checkDatabase: () => checkDatabaseConnection(prisma),
+    prisma,
   });
 
   const server = createServer(app);

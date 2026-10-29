@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { ConfigurationError, parseEnv } from "../src/config/env.js";
+import { ConfigurationError, jwtExpiresInSeconds, parseEnv } from "../src/config/env.js";
 
 const validEnv = {
   NODE_ENV: "test",
   PORT: "3000",
   DATABASE_URL: "postgresql://app:app_password@localhost:5432/warehouse",
   CORS_ORIGIN: "http://localhost:5173",
+  JWT_SECRET: "test-only-signing-secret-value",
+  JWT_EXPIRES_IN: "1h",
 };
 
 describe("parseEnv", () => {
@@ -22,6 +24,8 @@ describe("parseEnv", () => {
     const env = parseEnv({
       DATABASE_URL: validEnv.DATABASE_URL,
       CORS_ORIGIN: validEnv.CORS_ORIGIN,
+      JWT_SECRET: validEnv.JWT_SECRET,
+      JWT_EXPIRES_IN: validEnv.JWT_EXPIRES_IN,
     });
 
     expect(env.NODE_ENV).toBe("development");
@@ -69,6 +73,37 @@ describe("parseEnv", () => {
     expect(parseEnv({ ...validEnv, BCRYPT_ROUNDS: "12" }).BCRYPT_ROUNDS).toBe(12);
   });
 
+  it("requires JWT_SECRET", () => {
+    const { JWT_SECRET: _omitted, ...withoutSecret } = validEnv;
+
+    expect(() => parseEnv(withoutSecret)).toThrow(/JWT_SECRET is required/);
+  });
+
+  it("rejects a JWT_SECRET shorter than 16 characters", () => {
+    expect(() => parseEnv({ ...validEnv, JWT_SECRET: "too-short" })).toThrow(
+      /JWT_SECRET must be at least 16 characters/,
+    );
+  });
+
+  it("requires JWT_EXPIRES_IN", () => {
+    const { JWT_EXPIRES_IN: _omitted, ...withoutExpiry } = validEnv;
+
+    expect(() => parseEnv(withoutExpiry)).toThrow(/JWT_EXPIRES_IN is required/);
+  });
+
+  it.each(["1h", "30m", "3600s", "7d"])("accepts the JWT lifetime %s", (value) => {
+    expect(parseEnv({ ...validEnv, JWT_EXPIRES_IN: value }).JWT_EXPIRES_IN).toBe(value);
+  });
+
+  it.each(["1", "h", "1hh", "-1h", "1.5h", "1 h"])(
+    "rejects the malformed JWT lifetime %s",
+    (value) => {
+      expect(() => parseEnv({ ...validEnv, JWT_EXPIRES_IN: value })).toThrow(
+        /JWT_EXPIRES_IN must be a positive integer/,
+      );
+    },
+  );
+
   it("reports every problem at once", () => {
     try {
       parseEnv({ NODE_ENV: "staging" });
@@ -80,5 +115,24 @@ describe("parseEnv", () => {
       expect(issues).toContain("CORS_ORIGIN");
       expect(issues).toContain("NODE_ENV");
     }
+  });
+});
+
+describe("jwtExpiresInSeconds", () => {
+  it.each([
+    ["3600s", 3600],
+    ["30m", 1800],
+    ["1h", 3600],
+    ["7d", 604_800],
+  ])("converts %s to %i seconds", (value, expected) => {
+    expect(jwtExpiresInSeconds(value)).toBe(expected);
+  });
+
+  it("rejects a zero lifetime", () => {
+    expect(() => jwtExpiresInSeconds("0h")).toThrow(ConfigurationError);
+  });
+
+  it("rejects a malformed lifetime", () => {
+    expect(() => jwtExpiresInSeconds("one hour")).toThrow(ConfigurationError);
   });
 });

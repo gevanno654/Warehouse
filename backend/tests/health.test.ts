@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
+import type { PrismaClient } from "@prisma/client";
+
 import { createApp } from "../src/app.js";
 import type { AppConfig } from "../src/config/index.js";
 
@@ -29,9 +31,17 @@ function buildConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     databaseUrl: "postgresql://app:app_password@localhost:5432/warehouse",
     corsOrigin: "http://localhost:5173",
     openApiDocumentPath,
+    jwtSecret: "test-only-signing-secret-value",
+    jwtExpiresInSeconds: 3600,
     ...overrides,
   };
 }
+
+/**
+ * These tests never reach a business route, so the data client is never
+ * queried. Injecting a stub keeps the suite runnable without PostgreSQL.
+ */
+const unusedPrisma = {} as unknown as PrismaClient;
 
 type DatabaseProbe = () => Promise<boolean>;
 
@@ -42,7 +52,7 @@ function createTestApp(
   checkDatabase: DatabaseProbe = databaseUp,
   overrides: Partial<AppConfig> = {},
 ) {
-  return createApp({ config: buildConfig(overrides), checkDatabase });
+  return createApp({ config: buildConfig(overrides), checkDatabase, prisma: unusedPrisma });
 }
 
 describe("GET /health", () => {
@@ -145,6 +155,7 @@ describe("error handling", () => {
       checkDatabase: () => {
         throw new Error("secret-internal-detail");
       },
+      prisma: unusedPrisma,
     });
 
     const response = await request(app).get("/ready");

@@ -20,6 +20,13 @@ npm-debug.log*
 .vscode/
 .idea/
 
+# Local assistant/tool settings. These hold machine-specific paths and are not
+# safe to commit: a local settings file may contain a test connection string
+# with credentials. Project-wide rules belong in `.claude/settings.json`,
+# which is not ignored.
+.claude/settings.local.json
+.claude/settings.local.json.*
+
 # Test and tool caches
 .vitest/
 *.tsbuildinfo

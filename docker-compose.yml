@@ -32,6 +32,11 @@ services:
       # `db` resolves inside the Compose network only.
       DATABASE_URL: ${DATABASE_URL:-postgresql://app:app_password@db:5432/warehouse}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      # Required since Phase 3A: the API refuses to start without a signing key
+      # it can issue and verify tokens with. Read from `.env` (see
+      # `.env.example`); there is deliberately no fallback secret in this file.
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env - copy .env.example}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
     ports:
       - "3000:3000"
     depends_on:

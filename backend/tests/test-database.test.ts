@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  assertSafeTestDatabase,
   resolveTestDatabaseUrl,
   TestDatabaseConfigError,
 } from "../src/test-support/test-database.js";
@@ -73,6 +74,65 @@ describe("test database configuration safety", () => {
     });
 
     expect(result.databaseName).toBe("warehouse_test");
+  });
+});
+
+/**
+ * The destructive guard is exercised directly, not only through the happy path
+ * of `resetDatabase`. These cases run without a database because every one of
+ * them is expected to be rejected before a connection is attempted.
+ */
+describe("destructive operation guard", () => {
+  it("accepts a configuration produced by resolveTestDatabaseUrl", () => {
+    const config = resolveTestDatabaseUrl({
+      TEST_DATABASE_URL: "postgresql://app:app_password@localhost:5432/warehouse_test",
+    });
+
+    expect(() => assertSafeTestDatabase(config)).not.toThrow();
+  });
+
+  it("rejects a database name that does not end in _test", () => {
+    expect(() =>
+      assertSafeTestDatabase({
+        url: "postgresql://app:app_password@localhost:5432/warehouse",
+        databaseName: "warehouse",
+      }),
+    ).toThrow(/Refusing a destructive database operation against "warehouse"/);
+  });
+
+  it("rejects a production database name", () => {
+    expect(() =>
+      assertSafeTestDatabase({
+        url: "postgresql://app:app_password@db:5432/warehouse_production",
+        databaseName: "warehouse_production",
+      }),
+    ).toThrow(TestDatabaseConfigError);
+  });
+
+  it("rejects the postgres system database", () => {
+    expect(() =>
+      assertSafeTestDatabase({
+        url: "postgresql://app:app_password@localhost:5432/postgres",
+        databaseName: "postgres",
+      }),
+    ).toThrow(/system database/);
+  });
+
+  it("rejects a configuration whose label disagrees with its connection string", () => {
+    // A hand-built config could otherwise pair a production URL with a `_test`
+    // label and pass a name-only check.
+    expect(() =>
+      assertSafeTestDatabase({
+        url: "postgresql://app:app_password@db:5432/warehouse",
+        databaseName: "warehouse_test",
+      }),
+    ).toThrow(/does not match the connection string target/);
+  });
+
+  it("rejects an empty connection string", () => {
+    expect(() =>
+      assertSafeTestDatabase({ url: "", databaseName: "warehouse_test" }),
+    ).toThrow(/no connection string/);
   });
 });
 

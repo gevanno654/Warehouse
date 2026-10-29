@@ -54,6 +54,25 @@ export class AppError extends Error {
 export const notFoundError = (): AppError =>
   new AppError(404, "NOT_FOUND", "The requested resource does not exist.");
 
+/**
+ * Authentication failure.
+ *
+ * The message is deliberately generic and identical for a missing token, an
+ * invalid token, and bad credentials, so it never reveals whether an account
+ * exists.
+ */
+export const unauthenticatedError = (): AppError =>
+  new AppError(401, "UNAUTHENTICATED", "Authentication is required.");
+
+export const invalidCredentialsError = (): AppError =>
+  new AppError(401, "UNAUTHENTICATED", "Invalid email or password.");
+
+export const forbiddenError = (): AppError =>
+  new AppError(403, "FORBIDDEN", "Your role is not permitted to perform this operation.");
+
+export const duplicateSkuError = (): AppError =>
+  new AppError(409, "DUPLICATE_SKU", "A product with this SKU already exists.");
+
 export const serviceUnavailableError = (): AppError =>
   new AppError(
     503,

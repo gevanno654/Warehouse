@@ -351,7 +351,27 @@ Protected endpoints use a JWT bearer token.
 Authorization: Bearer <access-token>
 ```
 
-Product creation requires the `SUPERVISOR` role. All other endpoints in the table above require authentication but are available to both roles.
+Obtain a token from `POST /api/v1/auth/login`:
+
+```bash
+curl -s http://localhost:3000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"supervisor@example.com","password":"<seed-password>"}'
+```
+
+The response contains `accessToken`, `tokenType` (`Bearer`), `expiresIn` (seconds) and the authenticated `user`. Send it as `Authorization: Bearer <accessToken>` on every protected request.
+
+Implementation notes:
+
+- Tokens are HS256 JWTs signed with `JWT_SECRET`, with a lifetime of `JWT_EXPIRES_IN` (seconds, parsed from values such as `1h`). `expiresIn` in the login response is that lifetime in seconds, so it matches the contract example of `3600`.
+- Verification checks the signature, the algorithm, `exp`, `iss`, `aud`, and the `sub`/`role` claims. A missing, malformed, forged or expired token all produce `401 UNAUTHENTICATED`; the reason is not disclosed.
+- `JWT_SECRET` must be at least 16 characters. Startup fails with an actionable configuration error when `JWT_SECRET` or `JWT_EXPIRES_IN` is missing or invalid, rather than starting a server that cannot authenticate.
+- Unknown emails are compared against a dummy bcrypt hash so the response time does not reveal whether an account exists. Unknown email and wrong password return the same `401` body.
+- The API does not implement registration, password reset, or refresh tokens.
+
+Product creation requires the `SUPERVISOR` role. The permission is enforced on the backend, not by the UI: an operator who calls the endpoint receives `403 FORBIDDEN`. Listing products is available to both roles. All other endpoints in the table above require authentication but are available to both roles.
+
+Product creation is atomic. The product row and its single `inventories` row (`available_quantity = 0`) are written in one transaction, so a failure on either leaves neither behind. The SKU is trimmed and upper-cased before the uniqueness check, so `widget-1` and `  WIDGET-1 ` collide and return `409 DUPLICATE_SKU`.
 
 ### Receipt requests
 
@@ -511,6 +531,8 @@ Avoid manually editing the database schema without creating a corresponding migr
 
 Model-level naming uses `@map`/`@@map`, so the Prisma models are camel-case while the tables and columns match the snake_case names in `docs/erd.mmd`.
 
+`20261029153544_widen_product_sku` widens `products.sku` from `VARCHAR(64)` to `VARCHAR(100)` so the column matches `docs/openapi.yaml` (`maxLength: 100`) and `docs/technical-spec.md` §4.2. It is additive: existing data, the unique index, and every relationship that references `products` are unchanged.
+
 ## 11. AI-Assisted Development
 
 This repository uses spec-driven development with AI coding assistance.
@@ -603,8 +625,8 @@ Update this section as implementation progresses.
 - [x] Specifications and project documentation (Phase 0)
 - [x] Project foundation (Phase 1) — API health/readiness, Swagger UI, frontend shell, Docker Compose
 - [x] Database schema and migrations (Phase 2) — seven Prisma models, initial migration, test-database safeguards, idempotent development seed
-- [ ] Authentication and authorization
-- [ ] Product management
+- [x] Authentication and authorization (Phase 3A) — login, `/auth/me`, JWT bearer middleware, `OPERATOR`/`SUPERVISOR` role enforcement
+- [x] Product management (Phase 3A) — list and supervisor-only create, atomic product plus inventory creation
 - [ ] Receiving document management
 - [ ] Partial and complete receipt processing
 - [ ] Inventory and transaction history

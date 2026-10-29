@@ -106,13 +106,45 @@ export function resolveTestDatabaseUrl(source: NodeJS.ProcessEnv = process.env):
 /**
  * Guard for any destructive statement.
  *
- * Callers must obtain the URL from `resolveTestDatabaseUrl` so the target has
- * already been proven to be a test database.
+ * This is not a formality around `resolveTestDatabaseUrl`. A `DatabaseConfig`
+ * can be constructed by hand, so the name is re-derived from `config.url` here
+ * and must agree with `config.databaseName`. Without that re-derivation a
+ * caller could pair a production URL with a `_test` label and pass the check
+ * while pointing at a real database.
+ *
+ * A name ending in `_test` is necessary but not sufficient: the system
+ * databases are rejected outright, exactly as in `resolveTestDatabaseUrl`.
+ *
+ * @throws {TestDatabaseConfigError} when the target cannot be proven to be a
+ *         test database.
  */
 export function assertSafeTestDatabase(config: TestDatabaseConfig): void {
-  if (!TEST_DATABASE_NAME_PATTERN.test(config.databaseName)) {
+  if (config.url.trim() === "") {
     throw new TestDatabaseConfigError(
-      `Refusing a destructive database operation against "${config.databaseName}".`,
+      "Refusing a destructive database operation: no connection string was provided.",
+    );
+  }
+
+  // Re-derive the name from the URL. A mismatch means the config was not
+  // produced by `resolveTestDatabaseUrl` and cannot be trusted.
+  const resolvedName = parseDatabaseName(config.url);
+  if (resolvedName !== config.databaseName) {
+    throw new TestDatabaseConfigError(
+      `Refusing a destructive database operation: the configured database name ` +
+        `"${config.databaseName}" does not match the connection string target ` +
+        `"${resolvedName}".`,
+    );
+  }
+
+  if (PROTECTED_DATABASE_NAMES.has(resolvedName)) {
+    throw new TestDatabaseConfigError(
+      `Refusing a destructive database operation against the system database "${resolvedName}".`,
+    );
+  }
+
+  if (!TEST_DATABASE_NAME_PATTERN.test(resolvedName)) {
+    throw new TestDatabaseConfigError(
+      `Refusing a destructive database operation against "${resolvedName}".`,
     );
   }
 }

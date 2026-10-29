@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import { config as loadDotenvConfig } from "dotenv";
 
-import { parseEnv, type Env } from "./env.js";
+import { jwtExpiresInSeconds, parseEnv, type Env } from "./env.js";
 
 export interface AppConfig {
   readonly nodeEnv: Env["NODE_ENV"];
@@ -13,6 +13,10 @@ export interface AppConfig {
   readonly corsOrigin: string;
   /** Absolute path to the approved OpenAPI document served by Swagger UI. */
   readonly openApiDocumentPath: string;
+  /** HMAC key used to sign and verify access tokens. Never logged or returned. */
+  readonly jwtSecret: string;
+  /** Token lifetime in seconds, derived from `JWT_EXPIRES_IN`. */
+  readonly jwtExpiresInSeconds: number;
 }
 
 /**
@@ -61,5 +65,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     databaseUrl: env.DATABASE_URL,
     corsOrigin: env.CORS_ORIGIN,
     openApiDocumentPath: resolveOpenApiDocumentPath(),
+    jwtSecret: env.JWT_SECRET,
+    jwtExpiresInSeconds: jwtExpiresInSeconds(env.JWT_EXPIRES_IN),
   };
 }
