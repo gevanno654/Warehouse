@@ -321,4 +321,24 @@ AI-generated code may contain incorrect assumptions, incomplete edge-case handli
 Record meaningful AI-assisted decisions and corrections in Git history or development notes. Do not fabricate prompts, test results, performance measurements, or claims about AI usage.
 
 The final implementation and test results, rather than the AI's own assessment, determine whether the system meets the requirements.
+
+## 10. Assessment Execution Record (chronological)
+
+This section records how AI assistance was actually used during this assessment. Prompts A–E in §5 are reusable templates; the stages below describe real work, not verbatim chat history (full conversation logs are not stored in this repository).
+
+| # | Stage | Objective | Inputs | Real task instruction (summary) | Output | Validation |
+|---|---|---|---|---|---|---|
+| 1 | Requirement analysis | Confirm scope from the assessment brief | Assessment PDF, `docs/prd.md` | "Audit the repo against the assessment PDF; verify each deliverable exists and read its content" | Deliverables compliance matrix | File-by-file read, no assumptions |
+| 2 | PRD preparation | Verify business requirements are agent-actionable | `docs/prd.md` | "Check FR/BR/US coverage and flag ambiguous rules" | PRD PASS with resolved supervisor-create decision | Compared against implementation |
+| 3 | Technical spec & architecture | Verify design matches implementation | `docs/technical-spec.md`, `erd.mmd`, `data-model.md`, `openapi.yaml`, Prisma schema, routes | "Compare spec tables against schema/routes/middleware; report drift" | No drift found; lock order, hash, status rules confirmed | `grep` routes, schema models, openapi paths |
+| 4 | Project setup & instructions | Establish agent rules | `AGENTS.md`, `docs/ai-workflow.md` | "Follow AGENTS.md §3 working principles; one feature at a time" | Phased commits (Phase 0–5) | Git log review |
+| 5 | Backend implementation | Build API per contract | PRD, spec, openapi | Prompt B (implementation) per feature | Auth, products, receiving, inventory modules | `vitest`, `eslint`, `tsc` |
+| 6 | Frontend implementation | Build operator workflow | openapi, backend | Prompt B per screen | Login, documents, receipts, inventory screens | Frontend tests + smoke flow |
+| 7 | Business rule validation | Prove critical rules hold | PRD BR-01–BR-18 | Prompt C (receipt transaction review) | Over-receive blocked, idempotency, atomicity confirmed | Concurrency + rollback tests |
+| 8 | Automated testing | Evidence for submission | `docs/testing.md` | Prompt D (test generation & verification) | 207 backend tests passing; logs in `docs/evidence/` | `vitest run`, exit 0 |
+| 9 | Security review & deployment | Ship safely | Audit findings, compose files | "Fix /api prefix (trailing slash strips prefix); add advisory-locked one-time bootstrap; validate with `compose config` + `nginx -t`" | Prefix fix proven 6/6, bootstrap 11/11, live HTTPS | Route echo test, `nginx -t`, live `/health`+`/ready` |
+| 10 | Final documentation | Submission-ready docs | README, deployment doc | "Add live URL, verified results, doc links; mark deployment complete; no credentials" | README + `deployment-production.md` updated | Link check, `git diff --check` |
+| 11 | Final Git review & submission prep | Clean, safe commit | `git status/diff`, `.gitignore` | "Verify staged files, scan secrets, confirm branch sync; do not commit without approval" | `42e22f5 chore: finalize warehouse assessment submission` | `git diff --cached --check`, secret scan |
+
+Limitation: verbatim prompt history is not preserved in the repository; the table above summarizes real task instructions from the working session. Template prompts A–E remain templates and are not claimed as executed verbatim, except where a stage explicitly reused one (B, C, D).
 ```

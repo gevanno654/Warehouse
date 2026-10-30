@@ -12,8 +12,9 @@ coverage/
 !.env.example
 !.env.production.example
 
-# Logs
+# Logs (assessment evidence logs are committed intentionally)
 *.log
+!docs/evidence/*.log
 npm-debug.log*
 
 # Editor and OS files

@@ -1,0 +1,20 @@
+=== backend test ===
+date: 2026-10-30T06:19:58Z
+commit: 42e22f5a22277cbc06c7a39359d4022eb8a99378
+node: v20.20.2
+npm: 10.8.2
+command: npm test
+
+
+ RUN  v5.0.5 /opt/warehouse-receiving/backend
+
+
+ Test Files  12 passed (12)
+      Tests  207 passed (207)
+   Start at  13:19:59
+   Duration  36.68s (tests 75%, import 23%, transform 1%, setup 1%)
+
+    Isolate  12 workers spawned · ~269ms startup each (spawn + environment, per file)
+             at least ~2.96s faster with isolate: false — reuses workers across files instead of one per file
+
+EXIT:0
