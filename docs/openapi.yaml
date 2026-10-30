@@ -1,0 +1,984 @@
+openapi: 3.1.0
+
+info:
+  title: Warehouse Receiving System API
+  version: 1.1.0
+  description: |
+    REST API for managing products, receiving documents, receipt operations,
+    inventory balances, and inventory transaction history.
+
+    Business rules are enforced by the backend. Receipt processing must update
+    received quantities, inventory, receipt operations, inventory transactions,
+    and document status atomically.
+
+    Interactive documentation is served by Swagger UI at `/docs`; this document
+    is served at `/openapi.yaml`.
+
+    ## Status code policy
+
+    - `400` - malformed or schema-invalid request (wrong type, missing field,
+      invalid UUID, invalid pagination, missing required header).
+    - `401` - missing, malformed, or expired authentication.
+    - `403` - authenticated but lacking the required role.
+    - `404` - referenced resource does not exist.
+    - `409` - collides with existing state: duplicate resource, duplicate item,
+      or idempotency key replay with a different target or payload.
+    - `422` - schema-valid but violates a business rule.
+    - `429` - rate limit exceeded, only if rate limiting is enabled.
+    - `500` - unexpected server error.
+    - `503` - readiness failure only.
+
+    A schema failure is never reported as `422`, and a business-rule failure is
+    never reported as `400`.
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+tags:
+  - name: Authentication
+  - name: Products
+  - name: Receiving Documents
+  - name: Receipts
+  - name: Inventory
+  - name: Health
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Check API process health
+      security: []
+      responses:
+        "200":
+          description: API process is running
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+
+  /ready:
+    get:
+      tags: [Health]
+      summary: Check application readiness
+      security: []
+      description: Returns success only when required dependencies, including PostgreSQL, are reachable.
+      responses:
+        "200":
+          description: Application is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, database]
+                properties:
+                  status:
+                    type: string
+                    const: ready
+                  database:
+                    type: string
+                    const: connected
+        "503":
+          description: Application is not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: SERVICE_UNAVAILABLE
+                  message: A required dependency is unavailable.
+
+  /api/v1/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Authenticate a user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  maxLength: 255
+                password:
+                  type: string
+                  minLength: 1
+                  writeOnly: true
+      responses:
+        "200":
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [accessToken, tokenType, expiresIn, user]
+                    properties:
+                      accessToken:
+                        type: string
+                      tokenType:
+                        type: string
+                        const: Bearer
+                      expiresIn:
+                        type: integer
+                        description: Token lifetime in seconds
+                      user:
+                        $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/me:
+    get:
+      tags: [Authentication]
+      summary: Get the authenticated user
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/products:
+    get:
+      tags: [Products]
+      summary: List products
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 255
+          description: Search by SKU or product name
+      responses:
+        "200":
+          description: Product list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Product"
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags: [Products]
+      summary: Create a product
+      description: Supervisor access only. A newly created product starts with zero available stock.
+      x-required-role: SUPERVISOR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sku, name]
+              properties:
+                sku:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  description: Trimmed and normalised by the backend before persistence.
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+      responses:
+        "201":
+          description: Product created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Product"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: SKU already exists after trimming and upper-casing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error:
+                    code: DUPLICATE_SKU
+                    message: A product with this SKU already exists.
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/receiving-documents:
+    get:
+      tags: [Receiving Documents]
+      summary: List receiving documents
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/DocumentStatus"
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 50
+          description: Search by document number
+      responses:
+        "200":
+          description: Receiving document list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ReceivingDocumentSummary"
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags: [Receiving Documents]
+      summary: Create a receiving document
+      description: |
+        Creates a receiving document and its items atomically.
+
+        The backend generates the document number, initial received quantities,
+        status, and creator identity. The document number format is
+        `RCV-<YYYYMMDD>-<000001>`, derived from a database sequence. On a unique
+        violation the creation is retried up to three times, then fails with
+        `500 INTERNAL_ERROR`; no partially created document is left behind.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [productId, expectedQuantity]
+                    properties:
+                      productId:
+                        type: string
+                        format: uuid
+                      expectedQuantity:
+                        type: integer
+                        minimum: 1
+                  description: A product may appear only once in this array.
+      responses:
+        "201":
+          description: Receiving document created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ReceivingDocument"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: One or more referenced products do not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error:
+                    code: NOT_FOUND
+                    message: One or more referenced products do not exist.
+        "409":
+          description: The same product appears more than once in the document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error:
+                    code: DUPLICATE_DOCUMENT_ITEM
+                    message: A product may appear only once in a receiving document.
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/receiving-documents/{id}:
+    get:
+      tags: [Receiving Documents]
+      summary: Get receiving document details
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Receiving document details
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ReceivingDocument"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/receiving-documents/{id}/items/{itemId}/receipts:
+    post:
+      tags: [Receipts]
+      summary: Record a receipt against a receiving item
+      description: |
+        Records a partial or full receipt.
+
+        The `Idempotency-Key` header is required. The backend processes the
+        receipt in a single database transaction: it acquires locks in the order
+        receiving document → receiving item → inventory, checks idempotency,
+        validates the business rules, updates the received quantity and
+        inventory, records the receipt operation and inventory transaction,
+        recalculates document status from all items, and stores the response
+        snapshot.
+
+        Idempotency keys are scoped to the authenticated user. The uniqueness
+        constraint is `(performed_by, idempotency_key)`.
+
+        The request hash is SHA-256 over a canonical string of the HTTP method,
+        document ID, item ID, and quantity:
+
+        `sha256("post|" + documentId + "|" + itemId + "|" + quantity)`
+
+        Consequences:
+
+        - Same user, same key, same target and payload → `200` with the stored
+          result, no additional stock movement.
+        - Same user, same key, different target or payload → `409`
+          `IDEMPOTENCY_KEY_CONFLICT`, no writes.
+        - First-time success → `201`.
+        - A replay returns `200` even if the document has since become
+          `COMPLETED`, because the idempotency check precedes the
+          completed-document check.
+
+        Idempotency records are retained for 30 days.
+
+        Concurrent requests are serialised by the lock order. A request that
+        loses the race is re-validated against committed values and either
+        succeeds with a smaller valid quantity or fails with
+        `422 RECEIPT_EXCEEDS_REMAINING`; it can never over-receive.
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/ItemId"
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: |
+            Client-generated key identifying one logical receipt submission.
+            Reused verbatim only when retrying that same submission. Scoped to
+            the authenticated user; a UUID v4 is recommended.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity:
+                  type: integer
+                  minimum: 1
+      responses:
+        "201":
+          description: Receipt processed successfully for the first time
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ReceiptResult"
+        "200":
+          description: Previously processed idempotent request; original result returned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ReceiptResult"
+        "400":
+          description: |
+            Schema-level rejection, returned before the transaction begins. A
+            missing or empty `Idempotency-Key` header returns
+            `IDEMPOTENCY_KEY_REQUIRED`; a quantity that is not a positive integer
+            returns `INVALID_QUANTITY`; any other schema failure returns
+            `VALIDATION_ERROR`. A quantity that is a valid positive integer but
+            exceeds the remaining quantity is a business-rule failure and returns
+            `422`, not `400`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                validationError:
+                  value:
+                    error:
+                      code: VALIDATION_ERROR
+                      message: The request failed validation.
+                missingKey:
+                  value:
+                    error:
+                      code: IDEMPOTENCY_KEY_REQUIRED
+                      message: The Idempotency-Key header is required for receipt requests.
+                invalidQuantity:
+                  value:
+                    error:
+                      code: INVALID_QUANTITY
+                      message: The receipt quantity must be a positive integer.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Receiving document or item not found, or the item does not belong to the document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error:
+                    code: NOT_FOUND
+                    message: Receiving document or item not found.
+        "409":
+          description: Idempotency key reused with a different target or payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error:
+                    code: IDEMPOTENCY_KEY_CONFLICT
+                    message: This Idempotency-Key was already used for a different request.
+        "422":
+          description: |
+            Schema-valid request that violates a business rule: the quantity
+            exceeds the remaining quantity, or the document is already completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                exceedsRemaining:
+                  value:
+                    error:
+                      code: RECEIPT_EXCEEDS_REMAINING
+                      message: The receipt quantity exceeds the remaining expected quantity.
+                      details:
+                        remainingQuantity: 40
+                alreadyCompleted:
+                  value:
+                    error:
+                      code: DOCUMENT_ALREADY_COMPLETED
+                      message: Completed receiving documents cannot accept additional receipts.
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/inventory:
+    get:
+      tags: [Inventory]
+      summary: List current inventory
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 255
+          description: Search by product SKU or name
+      responses:
+        "200":
+          description: Current inventory list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/InventoryItem"
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/inventory/transactions:
+    get:
+      tags: [Inventory]
+      summary: List inventory transaction history
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: productId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          required: false
+          description: Inclusive start timestamp in ISO 8601 format
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: Inclusive end timestamp in ISO 8601 format
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Inventory transaction history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/InventoryTransaction"
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+    DocumentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    User:
+      type: object
+      required: [id, email, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [OPERATOR, SUPERVISOR]
+
+    ErrorCode:
+      type: string
+      description: Stable machine-readable error identifier. Part of the API contract.
+      enum:
+        - VALIDATION_ERROR
+        - UNAUTHENTICATED
+        - FORBIDDEN
+        - NOT_FOUND
+        - IDEMPOTENCY_KEY_REQUIRED
+        - IDEMPOTENCY_KEY_CONFLICT
+        - DUPLICATE_SKU
+        - DUPLICATE_DOCUMENT_ITEM
+        - INVALID_QUANTITY
+        - RECEIPT_EXCEEDS_REMAINING
+        - DOCUMENT_ALREADY_COMPLETED
+        - INTERNAL_ERROR
+        - SERVICE_UNAVAILABLE
+
+    Product:
+      type: object
+      required: [id, sku, name, availableQuantity, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        name:
+          type: string
+        availableQuantity:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    DocumentStatus:
+      type: string
+      enum: [PENDING, PARTIALLY_RECEIVED, COMPLETED]
+
+    ReceivingItem:
+      type: object
+      required:
+        - id
+        - productId
+        - sku
+        - productName
+        - expectedQuantity
+        - receivedQuantity
+        - remainingQuantity
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        expectedQuantity:
+          type: integer
+          minimum: 1
+        receivedQuantity:
+          type: integer
+          minimum: 0
+        remainingQuantity:
+          type: integer
+          minimum: 0
+
+    ReceivingDocumentSummary:
+      type: object
+      required:
+        - id
+        - documentNumber
+        - status
+        - createdAt
+        - totalItems
+        - totalExpectedQuantity
+        - totalReceivedQuantity
+      properties:
+        id:
+          type: string
+          format: uuid
+        documentNumber:
+          type: string
+        status:
+          $ref: "#/components/schemas/DocumentStatus"
+        createdAt:
+          type: string
+          format: date-time
+        totalItems:
+          type: integer
+          minimum: 1
+        totalExpectedQuantity:
+          type: integer
+          minimum: 1
+        totalReceivedQuantity:
+          type: integer
+          minimum: 0
+
+    ReceivingDocument:
+      allOf:
+        - $ref: "#/components/schemas/ReceivingDocumentSummary"
+        - type: object
+          required: [createdBy, items]
+          properties:
+            createdBy:
+              $ref: "#/components/schemas/User"
+            updatedAt:
+              type: string
+              format: date-time
+            items:
+              type: array
+              minItems: 1
+              items:
+                $ref: "#/components/schemas/ReceivingItem"
+
+    ReceiptResult:
+      type: object
+      required:
+        - receiptOperationId
+        - documentNumber
+        - itemId
+        - quantityReceivedNow
+        - cumulativeReceivedQuantity
+        - remainingQuantity
+        - availableStock
+        - documentStatus
+      properties:
+        receiptOperationId:
+          type: string
+          format: uuid
+        documentNumber:
+          type: string
+        itemId:
+          type: string
+          format: uuid
+        quantityReceivedNow:
+          type: integer
+          minimum: 1
+        cumulativeReceivedQuantity:
+          type: integer
+          minimum: 1
+        remainingQuantity:
+          type: integer
+          minimum: 0
+        availableStock:
+          type: integer
+          minimum: 0
+        documentStatus:
+          $ref: "#/components/schemas/DocumentStatus"
+
+    InventoryItem:
+      type: object
+      required: [productId, sku, name, availableQuantity]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        name:
+          type: string
+        availableQuantity:
+          type: integer
+          minimum: 0
+
+    InventoryTransaction:
+      type: object
+      required:
+        - id
+        - productId
+        - sku
+        - transactionType
+        - quantityChange
+        - documentNumber
+        - performedBy
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        transactionType:
+          type: string
+          enum: [RECEIPT]
+        quantityChange:
+          type: integer
+          minimum: 1
+        documentNumber:
+          type: string
+        performedBy:
+          type: string
+          format: email
+        createdAt:
+          type: string
+          format: date-time
+
+    PaginationMeta:
+      type: object
+      required: [page, limit, total]
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        limit:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              $ref: "#/components/schemas/ErrorCode"
+            message:
+              type: string
+              description: Human-readable. May change; do not parse.
+            details:
+              type: object
+              additionalProperties: true
+              description: Optional structured context, for example `remainingQuantity`.
+
+  responses:
+    BadRequest:
+      description: Malformed or schema-invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: The request failed validation.
+
+    Unauthorized:
+      description: Authentication is missing or invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: UNAUTHENTICATED
+              message: Authentication is required.
+
+    Forbidden:
+      description: Authenticated user is not permitted to perform this operation
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: FORBIDDEN
+              message: Your role is not permitted to perform this operation.
+
+    NotFound:
+      description: Requested resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: NOT_FOUND
+              message: The requested resource does not exist.
+
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: INTERNAL_ERROR
+              message: An unexpected error occurred.

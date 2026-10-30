@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+coverage/
+
+# Environment files. `.env.example` is the committed template.
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor and OS files
+.DS_Store
+.vscode/
+.idea/
+
+# Local assistant/tool settings. These hold machine-specific paths and are not
+# safe to commit: a local settings file may contain a test connection string
+# with credentials. Project-wide rules belong in `.claude/settings.json`,
+# which is not ignored.
+.claude/settings.local.json
+.claude/settings.local.json.*
+
+# Test and tool caches
+.vitest/
+*.tsbuildinfo

@@ -1,0 +1,77 @@
+erDiagram
+    USERS ||--o{ RECEIVING_DOCUMENTS : creates
+    USERS ||--o{ RECEIPT_OPERATIONS : performs
+    USERS ||--o{ INVENTORY_TRANSACTIONS : performs
+
+    PRODUCTS ||--|| INVENTORIES : has
+    RECEIVING_DOCUMENTS ||--|{ RECEIVING_ITEMS : contains
+    PRODUCTS ||--o{ RECEIVING_ITEMS : references
+
+    RECEIVING_ITEMS ||--o{ RECEIPT_OPERATIONS : receives
+    PRODUCTS ||--o{ INVENTORY_TRANSACTIONS : records
+    RECEIVING_ITEMS ||--o{ INVENTORY_TRANSACTIONS : generates
+    RECEIPT_OPERATIONS ||--|| INVENTORY_TRANSACTIONS : produces
+
+    USERS {
+        uuid id PK
+        varchar email UK
+        varchar password_hash
+        enum role
+        timestamptz created_at
+    }
+
+    PRODUCTS {
+        uuid id PK
+        varchar sku UK
+        varchar name
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    RECEIVING_DOCUMENTS {
+        uuid id PK
+        varchar document_number UK
+        enum status
+        uuid created_by FK
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    RECEIVING_ITEMS {
+        uuid id PK
+        uuid document_id FK
+        uuid product_id FK
+        integer expected_quantity
+        integer received_quantity
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    INVENTORIES {
+        uuid id PK
+        uuid product_id FK
+        integer available_quantity
+        timestamptz updated_at
+    }
+
+    RECEIPT_OPERATIONS {
+        uuid id PK
+        uuid performed_by FK
+        varchar idempotency_key
+        varchar request_hash
+        uuid receiving_item_id FK
+        integer quantity
+        jsonb response_snapshot
+        timestamptz created_at
+    }
+
+    INVENTORY_TRANSACTIONS {
+        uuid id PK
+        uuid product_id FK
+        uuid receiving_item_id FK
+        uuid receipt_operation_id FK
+        enum transaction_type
+        integer quantity_change
+        uuid performed_by FK
+        timestamptz created_at
+    }
