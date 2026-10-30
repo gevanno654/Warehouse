@@ -6,10 +6,11 @@ dist/
 dist-ssr/
 coverage/
 
-# Environment files. `.env.example` is the committed template.
+# Environment files. `.env.example` and `.env.production.example` are committed templates.
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # Logs
 *.log

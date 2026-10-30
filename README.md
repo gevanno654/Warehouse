@@ -4,6 +4,16 @@ A warehouse receiving application for recording incoming goods, tracking partial
 
 The project follows a spec-driven development approach with AI-assisted implementation. Business rules, API contracts, and database integrity requirements are documented before implementation.
 
+## Live Application
+
+The production deployment is live and reachable over HTTPS:
+
+- Application URL: `https://warehouse.gelabs.net`
+- Backend health endpoint: `https://warehouse.gelabs.net/health`
+- Backend readiness endpoint: `https://warehouse.gelabs.net/ready`
+
+No production credentials are published in this repository.
+
 ## 1. Features
 
 - User authentication using JWT.
@@ -32,6 +42,19 @@ The project follows a spec-driven development approach with AI-assisted implemen
 | API documentation | OpenAPI 3.1 |
 | Testing | Vitest, Supertest |
 | Local environment | Docker Compose |
+
+## Production Deployment
+
+The live deployment at `https://warehouse.gelabs.net` uses:
+
+- React + TypeScript + Vite for the frontend.
+- Node.js 24 + Express + TypeScript for the backend.
+- PostgreSQL as the database.
+- Prisma ORM for database access and migrations.
+- Docker Compose for running the services.
+- Nginx as the frontend web server, with reverse proxy through the existing hosting configuration.
+
+Production details (Compose file, environment template, migration, backup, and reverse-proxy steps) are documented in `docs/deployment-production.md`. The production database uses a persistent Docker volume and is reachable only through the internal Docker network.
 
 ## 3. Project Structure
 
@@ -516,6 +539,15 @@ Priority test areas include:
 
 The full test plan is available in `docs/testing.md`.
 
+### Verified test results
+
+- Backend: 207 tests passed.
+- Backend lint: passed.
+- Backend typecheck: passed.
+- Manual browser acceptance test: all features were tested by the administrator and confirmed working.
+
+No automated end-to-end browser suite is claimed; browser verification was manual.
+
 ## 10. Database Management
 
 Prisma schema and migrations are maintained in the backend project.
@@ -629,6 +661,7 @@ Verify environment variables, ports, dependency health, and the configured start
 | `docs/data-flow.mmd` | Request and receipt-processing data flow (raw Mermaid source) |
 | `docs/ai-workflow.md` | AI-assisted development workflow |
 | `docs/testing.md` | Testing strategy and test cases |
+| `docs/deployment-production.md` | Production deployment procedure |
 
 ## 14. Project Status
 
@@ -647,6 +680,6 @@ Update this section as implementation progresses.
 - [x] API contract verification (Phase 3B backend) — served `openapi.yaml` is byte-identical to the reviewed document; implemented routes match documented paths/methods and the error registry matches the `ErrorCode` enum
 - [x] Frontend receiving and inventory interface (Phase 3C) — login, session restore, hash-routed shell, document list/detail/create, idempotent receipt submission, inventory listing, transaction history; 37 frontend tests passing (6 files), verified against the real backend with a smoke flow
 - [x] Frontend product management (Phase 5) — supervisor-only Add Product form with the contract's request schema, searchable/paginated product list for both roles, immediate reuse on the New document screen; 47 frontend tests passing (6 files)
-- [ ] Final setup and deployment verification
+- [x] Production deployment verification — `https://warehouse.gelabs.net` live over HTTPS; `/health` and `/ready` healthy; 207 backend tests passing with lint and typecheck clean; supervisor created through the secure interactive bootstrap
 
 Do not mark a feature as complete until its implementation and verification have been performed.
