@@ -89,6 +89,7 @@ describe("App shell", () => {
       expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
     });
     expect(screen.getByRole("link", { name: "Documents" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Products" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Inventory" })).toBeInTheDocument();
     expect(screen.getByText("sup@example.com · SUPERVISOR")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
@@ -133,5 +134,27 @@ describe("App shell", () => {
     });
     expect(screen.queryByRole("link", { name: "New document" })).not.toBeInTheDocument();
     expect(screen.getByText("op@example.com · OPERATOR")).toBeInTheDocument();
+  });
+
+  it("shows the products link to operators as well", async () => {
+    const operator = { id: "u2", email: "op@example.com", role: "OPERATOR" } as const;
+    window.sessionStorage.setItem("wrs.accessToken", "op-token");
+    window.sessionStorage.setItem("wrs.currentUser", JSON.stringify(operator));
+    stubFetch((url) => {
+      if (url.endsWith("/ready")) {
+        return jsonResponse(200, {});
+      }
+      if (url.endsWith("/api/v1/auth/me")) {
+        return jsonResponse(200, { data: operator });
+      }
+      return jsonResponse(200, { data: [], meta: { page: 1, limit: 20, total: 0 } });
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+    });
+    expect(screen.getByRole("link", { name: "Products" })).toBeInTheDocument();
   });
 });

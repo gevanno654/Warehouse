@@ -4,7 +4,7 @@
  * Hash routes (`#/documents`, …) keep deep-linking and back-button behaviour
  * without any server rewrite rules — the static `web` container serves one
  * `index.html` and never sees the fragment. Screens below are the contract
- * surface only: documents, creation, inventory, transactions.
+ * surface only: documents, creation, products, inventory, transactions.
  */
 import { useCallback, useEffect, useState } from "react";
 
@@ -12,6 +12,7 @@ export type Route =
   | { readonly name: "documents" }
   | { readonly name: "new-document" }
   | { readonly name: "document"; readonly id: string }
+  | { readonly name: "products" }
   | { readonly name: "inventory" }
   | { readonly name: "transactions" }
   | { readonly name: "not-found" };
@@ -37,6 +38,9 @@ export function parseHash(hash: string): Route {
   if (first === "documents" && typeof second === "string" && segments.length === 2) {
     return { name: "document", id: second };
   }
+  if (first === "products" && segments.length === 1) {
+    return { name: "products" };
+  }
   if (first === "inventory" && segments.length === 1) {
     return { name: "inventory" };
   }
@@ -54,6 +58,8 @@ export function routeHref(route: Route): string {
       return "#/documents/new";
     case "document":
       return `#/documents/${route.id}`;
+    case "products":
+      return "#/products";
     case "inventory":
       return "#/inventory";
     case "transactions":

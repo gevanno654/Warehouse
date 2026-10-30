@@ -15,13 +15,17 @@ import { CreateDocumentScreen } from "./CreateDocumentScreen.js";
 import { DocumentDetailScreen } from "./DocumentDetailScreen.js";
 import { DocumentsScreen } from "./DocumentsScreen.js";
 import { InventoryScreen } from "./InventoryScreen.js";
+import { ProductsScreen } from "./ProductsScreen.js";
 import { TransactionsScreen } from "./TransactionsScreen.js";
 
 const SUPERVISOR = { id: "u1", email: "sup@example.com", role: "SUPERVISOR" } as const;
+const OPERATOR = { id: "u2", email: "op@example.com", role: "OPERATOR" } as const;
 
-function seedSession(): void {
+type SessionUser = typeof SUPERVISOR | typeof OPERATOR;
+
+function seedSession(user: SessionUser = SUPERVISOR): void {
   window.sessionStorage.setItem("wrs.accessToken", "test-token");
-  window.sessionStorage.setItem("wrs.currentUser", JSON.stringify(SUPERVISOR));
+  window.sessionStorage.setItem("wrs.currentUser", JSON.stringify(user));
 }
 
 type RouteHandler = (url: string, init?: RequestInit) => Response | Promise<Response> | undefined;
@@ -401,6 +405,235 @@ describe("business screens", () => {
     expect(within(table).getByText("WIDGET-1")).toBeInTheDocument();
     expect(within(table).getByText("+4")).toBeInTheDocument();
     expect(within(table).getByText("sup@example.com")).toBeInTheDocument();
+  });
+
+  it("lists products with search and shows an empty state", async () => {
+    stubRoutes({
+      "/api/v1/auth/me": () => jsonResponse(200, { data: SUPERVISOR }),
+      "/api/v1/products": (url) =>
+        url.includes("search=NONE")
+          ? jsonResponse(200, { data: [], meta: { page: 1, limit: 20, total: 0 } })
+          : jsonResponse(200, {
+              data: [
+                {
+                  id: "p1",
+                  sku: "WIDGET-1",
+                  name: "Widget One",
+                  availableQuantity: 3,
+                  createdAt: "2026-10-29T00:00:00.000Z",
+                  updatedAt: "2026-10-29T01:00:00.000Z",
+                },
+              ],
+              meta: { page: 1, limit: 20, total: 1 },
+            }),
+    });
+
+    render(
+      <AuthProvider>
+        <ProductsScreen />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("WIDGET-1")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Widget One")).toBeInTheDocument();
+    expect(screen.getByRole("table")).toHaveTextContent("3");
+
+    await userEvent.type(screen.getByLabelText("Search by SKU or name"), "NONE");
+    await userEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("No products match this search.")).toBeInTheDocument();
+    });
+  });
+
+  it("lets a supervisor create a product and refreshes the list", async () => {
+    let created = false;
+    const routes = stubRoutes({
+      "/api/v1/auth/me": () => jsonResponse(200, { data: SUPERVISOR }),
+      "/api/v1/products": (_url, init) => {
+        if (init?.method === "POST") {
+          expect(requestJsonBody(init)).toEqual({ sku: "WIDGET-2", name: "Widget Two" });
+          created = true;
+          return jsonResponse(201, {
+            data: {
+              id: "p2",
+              sku: "WIDGET-2",
+              name: "Widget Two",
+              availableQuantity: 0,
+              createdAt: "2026-10-29T00:00:00.000Z",
+              updatedAt: "2026-10-29T00:00:00.000Z",
+            },
+          });
+        }
+        return jsonResponse(200, {
+          data: created
+            ? [
+                {
+                  id: "p2",
+                  sku: "WIDGET-2",
+                  name: "Widget Two",
+                  availableQuantity: 0,
+                  createdAt: "2026-10-29T00:00:00.000Z",
+                  updatedAt: "2026-10-29T00:00:00.000Z",
+                },
+              ]
+            : [],
+          meta: { page: 1, limit: 20, total: created ? 1 : 0 },
+        });
+      },
+    });
+
+    render(
+      <AuthProvider>
+        <ProductsScreen />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/No products registered yet/)).toBeInTheDocument();
+    });
+
+    // Leading/trailing spaces are trimmed client-side; upper-casing is the
+    // backend's job, so the POST carries the trimmed value as typed.
+    await userEvent.type(screen.getByLabelText("SKU"), "  WIDGET-2 ");
+    await userEvent.type(screen.getByLabelText("Product name"), "Widget Two");
+    await userEvent.click(screen.getByRole("button", { name: "Add product" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Created WIDGET-2/)).toBeInTheDocument();
+    });
+    expect(screen.getAllByText("WIDGET-2").length).toBeGreaterThan(0);
+    const posts = routes.calls.filter((call) => call.init?.method === "POST");
+    expect(posts).toHaveLength(1);
+  });
+
+  it("blocks the create submit while fields are missing or invalid", async () => {
+    const routes = stubRoutes({
+      "/api/v1/auth/me": () => jsonResponse(200, { data: SUPERVISOR }),
+      "/api/v1/products": () =>
+        jsonResponse(200, { data: [], meta: { page: 1, limit: 20, total: 0 } }),
+    });
+
+    render(
+      <AuthProvider>
+        <ProductsScreen />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Add product" })).toBeInTheDocument();
+    });
+
+    // Blank name: the browser's own required-field validation stops the
+    // submit before the handler (and any POST) runs.
+    await userEvent.type(screen.getByLabelText("SKU"), "WIDGET-3");
+    await userEvent.click(screen.getByRole("button", { name: "Add product" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Product name")).toBeInvalid();
+    });
+    expect(routes.calls.filter((call) => call.init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("surfaces server errors when product creation fails", async () => {
+    stubRoutes({
+      "/api/v1/auth/me": () => jsonResponse(200, { data: SUPERVISOR }),
+      "/api/v1/products": (_url, init) =>
+        init?.method === "POST"
+          ? jsonResponse(409, {
+              error: { code: "DUPLICATE_SKU", message: "A product with this SKU already exists." },
+            })
+          : jsonResponse(200, { data: [], meta: { page: 1, limit: 20, total: 0 } }),
+    });
+
+    render(
+      <AuthProvider>
+        <ProductsScreen />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Add product" })).toBeInTheDocument();
+    });
+
+    await userEvent.type(screen.getByLabelText("SKU"), "WIDGET-1");
+    await userEvent.type(screen.getByLabelText("Product name"), "Widget One");
+    await userEvent.click(screen.getByRole("button", { name: "Add product" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "A product with this SKU already exists.",
+      );
+    });
+  });
+
+  it("hides the product creation form from operators but keeps the list", async () => {
+    seedSession(OPERATOR);
+    stubRoutes({
+      "/api/v1/auth/me": () => jsonResponse(200, { data: OPERATOR }),
+      "/api/v1/products": () =>
+        jsonResponse(200, {
+          data: [
+            {
+              id: "p1",
+              sku: "WIDGET-1",
+              name: "Widget One",
+              availableQuantity: 3,
+              createdAt: "2026-10-29T00:00:00.000Z",
+              updatedAt: "2026-10-29T01:00:00.000Z",
+            },
+          ],
+          meta: { page: 1, limit: 20, total: 1 },
+        }),
+    });
+
+    render(
+      <AuthProvider>
+        <ProductsScreen />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("WIDGET-1")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: "Add product" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("SKU")).not.toBeInTheDocument();
+  });
+
+  it("makes a newly created product searchable on the New document screen", async () => {
+    stubRoutes({
+      "/api/v1/auth/me": () => jsonResponse(200, { data: SUPERVISOR }),
+      "/api/v1/products": () =>
+        jsonResponse(200, {
+          data: [
+            {
+              id: "p9",
+              sku: "WIDGET-9",
+              name: "Widget Nine",
+              availableQuantity: 0,
+              createdAt: "2026-10-29T00:00:00.000Z",
+              updatedAt: "2026-10-29T00:00:00.000Z",
+            },
+          ],
+          meta: { page: 1, limit: 8, total: 1 },
+        }),
+    });
+
+    render(
+      <AuthProvider>
+        <CreateDocumentScreen onCreated={() => undefined} />
+      </AuthProvider>,
+    );
+
+    const productInput = screen.getByLabelText("Product");
+    await userEvent.click(productInput);
+    await userEvent.type(productInput, "WIDGET-9");
+
+    await waitFor(() => {
+      expect(screen.getByRole("option")).toHaveTextContent("WIDGET-9 — Widget Nine");
+    });
   });
 
   it("returns to login when the token expires mid-session", async () => {

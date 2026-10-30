@@ -12,11 +12,13 @@ import {
   ApiError,
   apiFetch,
   createDocument,
+  createProduct,
   getCurrentUser,
   isApiError,
   isSessionExpired,
   listDocuments,
   listInventory,
+  listProducts,
   listTransactions,
   login,
   recordReceipt,
@@ -199,6 +201,61 @@ describe("endpoint wiring", () => {
     expect(url).toContain("/api/v1/receiving-documents?");
     expect(url).toContain("status=PENDING");
     expect(url).toContain("search=RCV-1");
+  });
+
+  it("lists products with search and pagination params", async () => {
+    const mock = stubFetch(() =>
+      jsonResponse(200, { data: [], meta: { page: 1, limit: 20, total: 0 } }),
+    );
+
+    await listProducts({ token: "tok", search: "WIDGET", page: 1, limit: 20 });
+
+    const [url] = firstCall(mock);
+    expect(url).toContain("/api/v1/products?");
+    expect(url).toContain("search=WIDGET");
+  });
+
+  it("creates a product with the trimmed sku and name", async () => {
+    const mock = stubFetch(() =>
+      jsonResponse(201, {
+        data: {
+          id: "p1",
+          sku: "WIDGET-1",
+          name: "Widget One",
+          availableQuantity: 0,
+          createdAt: "2026-10-29T00:00:00.000Z",
+          updatedAt: "2026-10-29T00:00:00.000Z",
+        },
+      }),
+    );
+
+    const result = await createProduct("tok", { sku: "WIDGET-1", name: "Widget One" });
+
+    const [url, init] = firstCall(mock);
+    expect(url).toBe(`${API_BASE_URL}/api/v1/products`);
+    expect(init?.method).toBe("POST");
+    expect(init?.headers).toMatchObject({ Authorization: "Bearer tok" });
+    expect(requestBody(init)).toEqual({ sku: "WIDGET-1", name: "Widget One" });
+    expect(result.sku).toBe("WIDGET-1");
+    expect(result.availableQuantity).toBe(0);
+  });
+
+  it("surfaces a duplicate SKU as an ApiError with the contract code", async () => {
+    stubFetch(() =>
+      jsonResponse(409, {
+        error: { code: "DUPLICATE_SKU", message: "A product with this SKU already exists." },
+      }),
+    );
+
+    const failure = await createProduct("tok", { sku: "WIDGET-1", name: "Widget One" }).catch(
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(ApiError);
+    if (failure instanceof ApiError) {
+      expect(failure.code).toBe("DUPLICATE_SKU");
+      expect(failure.status).toBe(409);
+    }
   });
 
   it("creates a document with the items array and no client-side number", async () => {

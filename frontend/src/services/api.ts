@@ -290,6 +290,26 @@ export async function listProducts(
   return { products: data, meta: meta ?? { page: 1, limit: data.length, total: data.length } };
 }
 
+export interface CreateProductInput {
+  readonly sku: string;
+  readonly name: string;
+}
+
+/**
+ * `POST /api/v1/products` — supervisor only. The backend trims both fields,
+ * normalises the SKU to upper case, and creates the zero-stock inventory row
+ * atomically. `403 FORBIDDEN` for operators and `409 DUPLICATE_SKU` surface
+ * as `ApiError`s for the form to display.
+ */
+export async function createProduct(token: string, input: CreateProductInput): Promise<Product> {
+  const { data } = await apiFetch<Product>("/api/v1/products", {
+    method: "POST",
+    token,
+    body: { sku: input.sku, name: input.name },
+  });
+  return data;
+}
+
 export interface ListDocumentsInput {
   readonly token: string;
   readonly page?: number;

@@ -3,9 +3,9 @@
  *
  * Authenticated users get the nav plus the hash-routed business screens;
  * everyone else gets the login form. Authorisation stays on the backend — a
- * supervisor-only link (document creation) is hidden for operators as a
- * courtesy, but the API's `403` is the real control and the creation screen
- * renders its refusal message if it ever arrives.
+ * supervisor-only links (document and product creation) are hidden for
+ * operators as a courtesy, but the API's `403` is the real control and the
+ * creation screens render their refusal messages if they ever arrive.
  */
 import type { JSX } from "react";
 
@@ -19,6 +19,7 @@ import { DocumentDetailScreen } from "./screens/DocumentDetailScreen.js";
 import { DocumentsScreen } from "./screens/DocumentsScreen.js";
 import { InventoryScreen } from "./screens/InventoryScreen.js";
 import { LoginScreen } from "./screens/LoginScreen.js";
+import { ProductsScreen } from "./screens/ProductsScreen.js";
 import { TransactionsScreen } from "./screens/TransactionsScreen.js";
 
 function Shell(): JSX.Element {
@@ -101,6 +102,9 @@ function Shell(): JSX.Element {
             New document
           </a>
         ) : null}
+        <a href={routeHref({ name: "products" })} aria-current={route.name === "products" ? "page" : undefined}>
+          Products
+        </a>
         <a href={routeHref({ name: "inventory" })} aria-current={route.name === "inventory" ? "page" : undefined}>
           Inventory
         </a>
@@ -128,6 +132,7 @@ function Shell(): JSX.Element {
             onBack={() => navigate({ name: "documents" })}
           />
         ) : null}
+        {route.name === "products" ? <ProductsScreen /> : null}
         {route.name === "inventory" ? <InventoryScreen /> : null}
         {route.name === "transactions" ? <TransactionsScreen /> : null}
         {route.name === "not-found" ? (
